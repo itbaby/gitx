@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue'
+import DOMPurify from 'dompurify'
 import type { DiffInfo } from '../types'
 import * as Diff2Html from 'diff2html'
 import hljs from 'highlight.js'
@@ -14,7 +15,7 @@ const props = defineProps<{
 
 const diffHtml = ref('')
 const selectedFile = ref<string | null>(null)
-const viewMode = ref<string>('side-by-side')
+const viewMode = ref<'side-by-side' | 'line-by-line'>('side-by-side')
 
 const toggleViewMode = () => {
   viewMode.value = viewMode.value === 'side-by-side' ? 'line-by-line' : 'side-by-side'
@@ -38,25 +39,28 @@ const renderDiff = () => {
     return
   }
 
-  diffHtml.value = Diff2Html.html(diffString, {
+  diffHtml.value = DOMPurify.sanitize(Diff2Html.html(diffString, {
     drawFileList: false,
     matching: 'lines',
-    outputFormat: viewMode.value as any,
+    outputFormat: viewMode.value,
     renderNothingWhenEmpty: true,
-  })
+  }))
 
   nextTick(() => {
     applySyntaxHighlighting()
   })
 }
 
+const diffContainer = ref<HTMLElement | null>(null)
+
 const applySyntaxHighlighting = () => {
-  document.querySelectorAll('#diff-container pre code').forEach((block) => {
+  if (!diffContainer.value) return
+  diffContainer.value.querySelectorAll('pre code').forEach((block) => {
     hljs.highlightElement(block as HTMLElement)
   })
 }
 
-watch(() => [props.diffData, selectedFile.value, viewMode.value], renderDiff, { deep: true })
+watch([() => props.diffData, selectedFile, viewMode], renderDiff)
 
 onMounted(() => {
   renderDiff()
@@ -112,7 +116,7 @@ onMounted(() => {
     </div>
 
     <!-- Diff 内容 -->
-    <div v-if="diffHtml" id="diff-container" class="diff-content" v-html="diffHtml"></div>
+    <div v-if="diffHtml" id="diff-container" ref="diffContainer" class="diff-content" v-html="diffHtml"></div>
 
     <!-- 无差异 -->
     <div v-else class="no-diff">

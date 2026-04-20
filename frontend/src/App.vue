@@ -51,8 +51,8 @@ const openRepo = async (path: string) => {
     currentBranch.value = currentRes.current_branch
     compareBranch.value = currentBranch.value
     baseBranch.value = branches.value.includes('main') ? 'main' : branches.value.includes('master') ? 'master' : branches.value[0]
-  } catch (e: any) {
-    error.value = e.message
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -62,8 +62,8 @@ const fetchBranches = async () => {
   try {
     const res = await gitApi.getBranches()
     branches.value = res.branches
-  } catch (e: any) {
-    error.value = e.message
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   }
 }
 
@@ -76,8 +76,8 @@ const compareBranches = async (b1: string, b2: string) => {
     diffData.value = res.diff
     const commitRes = await gitApi.getCommits(b2, 30)
     commits.value = commitRes.commits
-  } catch (e: any) {
-    error.value = e.message
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
     diffData.value = []
   } finally {
     loading.value = false
@@ -91,8 +91,8 @@ const fetchCommits = async (branch?: string) => {
   try {
     const res = await gitApi.getCommits(branch || currentBranch.value, 50)
     commits.value = res.commits
-  } catch (e: any) {
-    error.value = e.message
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -105,8 +105,8 @@ const fetchFileHistory = async (file: string, timeRange = '3d') => {
   try {
     const res = await gitApi.getFileHistory(file, timeRange)
     fileHistory.value = res.commits
-  } catch (e: any) {
-    error.value = e.message
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -114,7 +114,7 @@ const fetchFileHistory = async (file: string, timeRange = '3d') => {
 
 // ---- AI 操作 ----
 
-const handleChat = (text: string) => {
+const handleChat = async (text: string) => {
   const userMsg: ChatMessage = {
     id: crypto.randomUUID(),
     role: 'user',
@@ -142,21 +142,27 @@ const handleChat = (text: string) => {
     has_diff: diffData.value.length > 0,
   }
 
-  aiApi.chat(
-    chatHistory,
-    chatCtx,
-    (_name, display) => { toolStatus.value = display },
-    (chunk) => {
-      toolStatus.value = ''
-      aiMsg.content += chunk
-    },
-    () => { aiMsg.isStreaming = false },
-    (err) => {
-      aiMsg.content = `请求失败: ${err.message}`
-      aiMsg.isStreaming = false
-      toolStatus.value = ''
-    },
-  )
+  try {
+    await aiApi.chat(
+      chatHistory,
+      chatCtx,
+      (_name, display) => { toolStatus.value = display },
+      (chunk) => {
+        toolStatus.value = ''
+        aiMsg.content += chunk
+      },
+      () => { aiMsg.isStreaming = false },
+      (err) => {
+        aiMsg.content = `请求失败: ${err.message}`
+        aiMsg.isStreaming = false
+        toolStatus.value = ''
+      },
+    )
+  } catch (err: any) {
+    aiMsg.content = `请求失败: ${err.message}`
+    aiMsg.isStreaming = false
+    toolStatus.value = ''
+  }
 }
 
 const onBaseBranchChange = (branch: string) => { baseBranch.value = branch }
@@ -226,7 +232,7 @@ const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value)
         :loading="loading"
         :has-repo="hasRepo"
         @tab-change="activeTab = $event"
-        @file-select="() => {}"
+
         @fetch-commits="fetchCommits"
         @fetch-file-history="fetchFileHistory"
       />
