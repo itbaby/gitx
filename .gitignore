@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build output
+frontend/dist/
+backend/bin/
+backend/gitx-server
+backend/main
+gitx-server
+
+# AI tool memory
+.workbuddy/
+
+# Environment files
+backend/.env
+!.env.example
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary
+*.local
+*.tmp
+*.bak
