@@ -1,90 +1,173 @@
-# GitX - AI Git Diff Analyzer
+<p align="center">
+  <img src="docs/gitx-logo.svg" width="96" height="96" alt="GitX Logo" />
+</p>
 
-一个基于 AI 的 Git 差异分析工具，支持仓库浏览、分支比较、文件历史追踪和智能代码变更解读。
+<h1 align="center">GitX</h1>
 
-## 功能特性
+<p align="center">
+  <strong>AI-Powered Git Diff Analyzer</strong><br/>
+  Understand your code changes instantly with intelligent diff analysis,<br/>
+  commit insights, and conversational code review.
+</p>
 
-- 📂 **仓库管理**：打开本地 Git 仓库，浏览分支结构
-- 🔀 **分支比较**：Side-by-Side 可视化对比任意两个分支的差异
-- 📝 **文件历史**：追踪指定文件在时间范围内的变更记录
-- 🤖 **AI 分析**：基于大语言模型的智能代码差异解读
-- 💬 **自然语言交互**：通过自然语言命令执行 Git 操作
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go" alt="Go" />
+  <img src="https://img.shields.io/badge/Vue-3.5-4FC08D?style=flat-square&logo=vue.js" alt="Vue" />
+  <img src="https://img.shields.io/badge/TypeScript-6.0-3178C6?style=flat-square&logo=typescript" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="MIT" />
+  <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen?style=flat-square" alt="PRs Welcome" />
+</p>
 
-## 技术栈
+<p align="center">
+  <a href="#features">Features</a> &middot;
+  <a href="#architecture">Architecture</a> &middot;
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#configuration">Configuration</a> &middot;
+  <a href="#api-reference">API</a>
+</p>
 
-| 层级 | 技术 |
-|------|------|
-| 后端 | Go + Gin + go-git + OpenAI API |
-| 前端 | Vue 3 + TypeScript + Vite + diff2html |
-| 样式 | CSS 自定义属性（深色主题） |
+---
 
-## 项目结构
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Branch Comparison** | Side-by-side visual diff of any two branches with syntax highlighting and stats |
+| **AI-Powered Analysis** | Ask questions in natural language, get context-aware explanations of code changes |
+| **Commit History** | Browse commit history across branches with metadata, timestamps, and author info |
+| **File History** | Track changes to specific files over any time range |
+| **Agent Chat** | Multi-turn conversation with AI assistant that can call Git tools autonomously |
+| **SSE Streaming** | Real-time streaming responses with tool status, chunk buffering, and Markdown output |
+| **Self-Hosted** | Runs locally — your code never leaves your machine. Works with any OpenAI-compatible API |
+
+---
+
+## Architecture
+
+<p align="center">
+  <img src="docs/gitx-arch.svg" alt="GitX Architecture" width="760" />
+</p>
 
 ```
-gitx/
-├── backend/
-│   ├── cmd/
-│   │   └── main.go           # 服务入口
-│   ├── internal/
-│   │   ├── ai/ai.go          # AI 客户端
-│   │   ├── git/git.go        # Git 操作
-│   │   └── intent/intent.go  # 意图解析
-│   ├── .env.example          # 环境变量模板
-│   └── go.mod
-├── frontend/
-│   ├── src/
-│   │   ├── App.vue           # 根组件
-│   │   ├── main.ts           # 入口
-│   │   ├── style.css         # 全局样式
-│   │   ├── types/            # 类型定义
-│   │   ├── api/              # API 封装
-│   │   ├── composables/      # 组合式函数
-│   │   └── components/       # UI 组件
-│   ├── index.html
-│   ├── vite.config.ts
-│   └── package.json
-└── .gitignore
+Browser  ──SSE/REST──►  Go Backend
+  │                       ├── Git Engine (go-git)
+  │                       ├── AI Agent (OpenAI API + Function Calling)
+  │                       ├── SSE Streaming (Chunk Buffered)
+  │                       └── Intent Parser (NL → Git actions)
+  │
+  └── Vite Dev Server proxies /api → :8080
 ```
 
-## 快速开始
+---
 
-### 前置条件
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| **Backend** | Go 1.21 · Gin · go-git · OpenAI-compatible API |
+| **Frontend** | Vue 3 · TypeScript · Vite · diff2html · highlight.js |
+| **AI** | Function Calling · Tool Use · SSE Streaming |
+| **Style** | CSS Custom Properties (Dark Theme) |
+
+---
+
+## Quick Start
+
+### Prerequisites
 
 - Go 1.21+
 - Node.js 18+
-- OpenAI API Key（或兼容的 API 端点）
+- An OpenAI-compatible API key
 
-### 后端
+### Backend
 
 ```bash
 cd backend
-cp .env.example .env
-# 编辑 .env 填入你的 API Key
+cp .env.example .env      # Edit .env and add your API key
 go mod tidy
-go run cmd/main.go
+go run cmd/main.go         # Starts on http://localhost:8080
 ```
 
-### 前端
+### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev                # Starts on http://localhost:5173
 ```
 
-开发模式下前端默认运行在 `http://localhost:5173`，API 请求会代理到后端 `http://localhost:8080`。
+The frontend dev server proxies all `/api` requests to the backend automatically.
 
-## 配置
+---
 
-在 `backend/.env` 中配置：
+## Configuration
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `PORT` | 服务端口 | `8080` |
-| `AI_MODEL` | AI 模型名称 | `gpt-4o` |
-| `OPENAI_API_KEY` | API 密钥 | - |
-| `OPENAI_BASE_URL` | 自定义 API 端点（可选） | - |
+Environment variables in `backend/.env`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | Server port | `8080` |
+| `AI_MODEL` | AI model name | `gpt-4o` |
+| `OPENAI_API_KEY` | API key (required) | — |
+| `OPENAI_BASE_URL` | Custom API endpoint (optional) | — |
+
+---
+
+## API Reference
+
+### Git Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/git/open` | Open a local Git repository |
+| `GET` | `/api/git/branches` | List all local branches |
+| `GET` | `/api/git/branches/current` | Get current branch name |
+| `GET` | `/api/git/commits?branch=&limit=` | Get commit history |
+| `POST` | `/api/git/diff` | Get diff between two commits |
+| `POST` | `/api/git/branch-diff` | Get diff between two branches |
+| `GET` | `/api/git/file-history?file=&timeRange=` | Get file change history |
+
+### AI Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/ai/chat` | Agent chat (SSE streaming with tool calling) |
+| `POST` | `/api/ai/analyze` | Analyze diff (non-streaming) |
+| `POST` | `/api/ai/analyze-stream` | Analyze diff (SSE streaming) |
+| `POST` | `/api/ai/parse-intent` | Parse natural language to Git intent |
+
+---
+
+## Project Structure
+
+```
+gitx/
+├── backend/
+│   ├── cmd/main.go              # Server entry, singleton AI client
+│   └── internal/
+│       ├── ai/
+│       │   ├── agent.go         # Agent chat with chunk buffering
+│       │   ├── ai.go            # AI client (OpenAI-compatible)
+│       │   └── tools.go         # 6 Git function tools
+│       ├── git/git.go           # Repository operations via go-git
+│       └── intent/intent.go     # Natural language intent parser
+├── frontend/
+│   └── src/
+│       ├── App.vue              # Root component
+│       ├── api/index.ts         # SSE client with multi-line parser
+│       ├── components/
+│       │   ├── AIPanel.vue      # AI chat with streaming Markdown
+│       │   ├── DiffViewer.vue   # Syntax-highlighted diff view
+│       │   ├── Sidebar.vue      # Branch selector & repo browser
+│       │   ├── CommitList.vue   # Commit history panel
+│       │   └── FileHistoryList.vue
+│       └── types/index.ts       # TypeScript type definitions
+├── site/                        # Landing page (Vercel)
+└── .github/workflows/build.yml  # CI: 5-platform build + release
+```
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE)
