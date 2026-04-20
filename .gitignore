@@ -12,6 +12,9 @@ gitx-server
 # AI tool memory
 .workbuddy/
 
+# Vercel
+site/.vercel/
+
 # Environment files
 backend/.env
 !.env.example
