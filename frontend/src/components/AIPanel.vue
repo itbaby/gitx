@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { ChatMessage } from '../types'
 
 const props = defineProps<{
@@ -60,39 +62,18 @@ const handleQuickPrompt = (prompt: string) => {
   emit('send', prompt)
 }
 
-// 简单的 Markdown 渲染
-const renderMarkdown = (text: string) => {
+// Markdown rendering with marked + DOMPurify
+const renderMarkdown = (text: string): string => {
   if (!text) return ''
-  // 先处理代码块，避免内部被替换
-  const codeBlocks: string[] = []
-  let processed = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const idx = codeBlocks.length
-    codeBlocks.push(`<pre><code class="language-${lang || 'text'}">${code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`)
-    return `%%CODEBLOCK_${idx}%%`
-  })
+  const rawHtml = marked.parse(text, { async: false }) as string
+  return DOMPurify.sanitize(rawHtml)
+}
 
-  // 标题
-  processed = processed
-    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^# (.+)$/gm, '<h2>$1</h2>')
-  // 加粗
-  processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  // 行内代码
-  processed = processed.replace(/`([^`]+)`/g, '<code>$1</code>')
-  // 有序列表
-  processed = processed.replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-  // 无序列表
-  processed = processed.replace(/^- (.+)$/gm, '<li>$1</li>')
-  // 连续 li 包裹 ul
-  processed = processed.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
-  // 换行
-  processed = processed.replace(/\n/g, '<br>')
-  // 还原代码块
-  codeBlocks.forEach((block, idx) => {
-    processed = processed.replace(`%%CODEBLOCK_${idx}%%`, block)
-  })
-  return processed
+// Escape HTML for user messages (prevent XSS)
+const escapeHtml = (text: string): string => {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
 }
 </script>
 
@@ -185,14 +166,6 @@ const renderMarkdown = (text: string) => {
     </div>
   </aside>
 </template>
-
-<script lang="ts">
-function escapeHtml(text: string) {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
-</script>
 
 <style scoped>
 .ai-panel {

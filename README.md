@@ -11,7 +11,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go" alt="Go" />
+  <img src="https://img.shields.io/badge/Rust-1.80+-000000?style=flat-square&logo=rust" alt="Rust" />
+  <img src="https://img.shields.io/badge/Tauri-2.0-24C8D8?style=flat-square" alt="Tauri" />
   <img src="https://img.shields.io/badge/Vue-3.5-4FC08D?style=flat-square&logo=vue.js" alt="Vue" />
   <img src="https://img.shields.io/badge/TypeScript-6.0-3178C6?style=flat-square&logo=typescript" alt="TypeScript" />
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="MIT" />
@@ -22,8 +23,7 @@
   <a href="#features">Features</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
-  <a href="#configuration">Configuration</a> &middot;
-  <a href="#api-reference">API</a>
+  <a href="#configuration">Configuration</a>
 </p>
 
 ---
@@ -37,8 +37,8 @@
 | **Commit History** | Browse commit history across branches with metadata, timestamps, and author info |
 | **File History** | Track changes to specific files over any time range |
 | **Agent Chat** | Multi-turn conversation with AI assistant that can call Git tools autonomously |
-| **SSE Streaming** | Real-time streaming responses with tool status, chunk buffering, and Markdown output |
-| **Self-Hosted** | Runs locally — your code never leaves your machine. Works with any OpenAI-compatible API |
+| **Streaming Responses** | Real-time streaming with tool status indicators and Markdown rendering |
+| **Privacy First** | Desktop app runs locally — your code never leaves your machine. Works with any OpenAI-compatible API |
 
 ---
 
@@ -49,13 +49,18 @@
 </p>
 
 ```
-Browser  ──SSE/REST──►  Go Backend
-  │                       ├── Git Engine (go-git)
-  │                       ├── AI Agent (OpenAI API + Function Calling)
-  │                       ├── SSE Streaming (Chunk Buffered)
-  │                       └── Intent Parser (NL → Git actions)
+Tauri Window
+  ├── Vue 3 Frontend (via Tauri invoke/listen IPC)
+  │     ├── Sidebar (repo browser, branch selector)
+  │     ├── DiffViewer (syntax-highlighted diffs)
+  │     ├── CommitList (timeline history)
+  │     └── AIPanel (streaming chat interface)
   │
-  └── Vite Dev Server proxies /api → :8080
+  └── Rust Backend
+        ├── Git Engine (git2 / libgit2)
+        ├── AI Agent (reqwest + OpenAI-compatible API + Function Calling)
+        ├── Intent Parser (NL → Git actions)
+        └── Tauri Events (streaming chunks to frontend)
 ```
 
 ---
@@ -64,9 +69,10 @@ Browser  ──SSE/REST──►  Go Backend
 
 | Layer | Technology |
 |-------|------------|
-| **Backend** | Go 1.21 · Gin · go-git · OpenAI-compatible API |
+| **Desktop Shell** | Tauri 2 · Rust |
+| **Backend** | Rust · git2 (libgit2) · reqwest · tokio |
 | **Frontend** | Vue 3 · TypeScript · Vite · diff2html · highlight.js |
-| **AI** | Function Calling · Tool Use · SSE Streaming |
+| **AI** | Function Calling · Tool Use · Streaming via Tauri Events |
 | **Style** | CSS Custom Properties (Dark Theme) |
 
 ---
@@ -75,66 +81,45 @@ Browser  ──SSE/REST──►  Go Backend
 
 ### Prerequisites
 
-- Go 1.21+
-- Node.js 18+
+- [Rust](https://rustup.rs/) 1.80+
+- [Node.js](https://nodejs.org/) 18+
 - An OpenAI-compatible API key
 
-### Backend
+### Build & Run
 
 ```bash
-cd backend
-cp .env.example .env      # Edit .env and add your API key
-go mod tidy
-go run cmd/main.go         # Starts on http://localhost:8080
-```
-
-### Frontend
-
-```bash
+# Install frontend dependencies
 cd frontend
 npm install
-npm run dev                # Starts on http://localhost:5173
+
+# Configure your AI API key
+cp ../src-tauri/.env.example ../src-tauri/.env
+# Edit src-tauri/.env and add your API key
+
+# Run in development mode (from project root)
+cd ..
+cargo tauri dev
 ```
 
-The frontend dev server proxies all `/api` requests to the backend automatically.
+### Build for Production
+
+```bash
+cargo tauri build
+```
+
+This produces platform-specific installers (`.dmg` on macOS, `.msi` on Windows, `.AppImage` on Linux).
 
 ---
 
 ## Configuration
 
-Environment variables in `backend/.env`:
+Environment variables in `src-tauri/.env`:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PORT` | Server port | `8080` |
-| `AI_MODEL` | AI model name | `gpt-4o` |
 | `OPENAI_API_KEY` | API key (required) | — |
 | `OPENAI_BASE_URL` | Custom API endpoint (optional) | — |
-
----
-
-## API Reference
-
-### Git Operations
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/git/open` | Open a local Git repository |
-| `GET` | `/api/git/branches` | List all local branches |
-| `GET` | `/api/git/branches/current` | Get current branch name |
-| `GET` | `/api/git/commits?branch=&limit=` | Get commit history |
-| `POST` | `/api/git/diff` | Get diff between two commits |
-| `POST` | `/api/git/branch-diff` | Get diff between two branches |
-| `GET` | `/api/git/file-history?file=&timeRange=` | Get file change history |
-
-### AI Operations
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/ai/chat` | Agent chat (SSE streaming with tool calling) |
-| `POST` | `/api/ai/analyze` | Analyze diff (non-streaming) |
-| `POST` | `/api/ai/analyze-stream` | Analyze diff (SSE streaming) |
-| `POST` | `/api/ai/parse-intent` | Parse natural language to Git intent |
+| `AI_MODEL` | AI model name | `glm-4-flash` |
 
 ---
 
@@ -142,28 +127,28 @@ Environment variables in `backend/.env`:
 
 ```
 gitx/
-├── backend/
-│   ├── cmd/main.go              # Server entry, singleton AI client
-│   └── internal/
-│       ├── ai/
-│       │   ├── agent.go         # Agent chat with chunk buffering
-│       │   ├── ai.go            # AI client (OpenAI-compatible)
-│       │   └── tools.go         # 6 Git function tools
-│       ├── git/git.go           # Repository operations via go-git
-│       └── intent/intent.go     # Natural language intent parser
+├── src-tauri/                     # Tauri desktop app (Rust backend)
+│   ├── src/
+│   │   ├── lib.rs                 # Tauri commands, state management
+│   │   ├── git.rs                 # Git operations via git2
+│   │   ├── ai.rs                  # AI client with streaming
+│   │   ├── tools.rs               # 6 Git function tools for agent
+│   │   └── intent.rs              # Natural language intent parser
+│   ├── Cargo.toml
+│   └── tauri.conf.json
 ├── frontend/
 │   └── src/
-│       ├── App.vue              # Root component
-│       ├── api/index.ts         # SSE client with multi-line parser
+│       ├── App.vue                # Root component
+│       ├── api/index.ts           # Tauri IPC client
 │       ├── components/
-│       │   ├── AIPanel.vue      # AI chat with streaming Markdown
-│       │   ├── DiffViewer.vue   # Syntax-highlighted diff view
-│       │   ├── Sidebar.vue      # Branch selector & repo browser
-│       │   ├── CommitList.vue   # Commit history panel
+│       │   ├── AIPanel.vue        # AI chat with streaming Markdown
+│       │   ├── DiffViewer.vue     # Syntax-highlighted diff view
+│       │   ├── Sidebar.vue        # Branch selector & repo browser
+│       │   ├── CommitList.vue     # Commit history panel
 │       │   └── FileHistoryList.vue
-│       └── types/index.ts       # TypeScript type definitions
-├── site/                        # Landing page (Vercel)
-└── .github/workflows/build.yml  # CI: 5-platform build + release
+│       └── types/index.ts         # TypeScript type definitions
+├── docs/                          # Logo and architecture assets
+└── .github/workflows/build.yml   # CI: multi-platform Tauri build + release
 ```
 
 ---

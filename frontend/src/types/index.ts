@@ -1,10 +1,5 @@
 // Git 相关类型定义
 
-export interface BranchInfo {
-  name: string
-  isCurrent: boolean
-}
-
 export interface CommitInfo {
   hash: string
   shortHash: string
