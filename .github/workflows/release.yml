@@ -23,20 +23,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS 14 (Sonoma) 是 Apple Silicon 机器
+          # macOS 14 = Apple Silicon, macOS-latest = Intel
           - os: macos-14
             target: aarch64-apple-darwin
             args: ''
-          # macOS 最新版是 Intel 机器
           - os: macos-latest
             target: x86_64-apple-darwin
-            args: ''
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
             args: ''
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ''
+          # Windows build temporarily disabled due to cross-compilation issues
+          # - os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          #   args: ''
 
     steps:
       - name: Checkout repository
@@ -91,7 +91,6 @@ jobs:
             |----------|------|
             | macOS (Apple Silicon) | `GitX_*_aarch64.dmg` |
             | macOS (Intel) | `GitX_*_x86_64.dmg` |
-            | Windows | `GitX_*_x64-setup.exe` |
             | Linux | `gitx_*_amd64.deb` |
 
             ## Homebrew Installation
