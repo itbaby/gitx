@@ -55,6 +55,9 @@ interface ToolEvent {
   display: string
 }
 
+// Monotonic request counter to disambiguate concurrent streaming sessions.
+let chatRequestId = 0
+
 export const aiApi = {
   async chat(
     messages: InputMessage[],
@@ -64,17 +67,27 @@ export const aiApi = {
     onDone: () => void,
     onError: (err: Error) => void,
   ): Promise<void> {
+    // Increment request ID so stale events from previous requests are ignored.
+    const requestId = ++chatRequestId
     const unlisteners: UnlistenFn[] = []
+
+    const cleanup = () => {
+      unlisteners.forEach((u) => u())
+    }
+
+    const isCurrentRequest = () => requestId === chatRequestId
 
     try {
       unlisteners.push(
         await listen<ToolEvent>('ai-tool', (event) => {
+          if (!isCurrentRequest()) return
           onTool(event.payload.name, event.payload.display)
         }),
       )
 
       unlisteners.push(
         await listen<string>('ai-chat-chunk', (event) => {
+          if (!isCurrentRequest()) return
           onTool('', '')
           onChunk(event.payload)
         }),
@@ -82,69 +95,24 @@ export const aiApi = {
 
       unlisteners.push(
         await listen<void>('ai-chat-done', () => {
+          if (!isCurrentRequest()) return
+          cleanup()
           onDone()
-          unlisteners.forEach((u) => u())
         }),
       )
 
       unlisteners.push(
         await listen<string>('ai-error', (event) => {
+          if (!isCurrentRequest()) return
+          cleanup()
           onError(new Error(event.payload))
-          unlisteners.forEach((u) => u())
         }),
       )
 
       await invoke('ai_chat', { request: { messages, context } })
     } catch (err) {
-      unlisteners.forEach((u) => u())
+      cleanup()
       onError(err instanceof Error ? err : new Error(String(err)))
     }
-  },
-
-  async analyze(diff: DiffInfo[], prompt: string): Promise<{ analysis: string }> {
-    const analysis = await invoke<string>('ai_analyze', { request: { diff, prompt } })
-    return { analysis }
-  },
-
-  async analyzeStream(
-    diff: DiffInfo[],
-    prompt: string,
-    onChunk: (text: string) => void,
-    onDone: () => void,
-    onError: (err: Error) => void,
-  ): Promise<void> {
-    const unlisteners: UnlistenFn[] = []
-
-    try {
-      unlisteners.push(
-        await listen<string>('ai-analyze-chunk', (event) => {
-          onChunk(event.payload)
-        }),
-      )
-
-      unlisteners.push(
-        await listen<void>('ai-analyze-done', () => {
-          onDone()
-          unlisteners.forEach((u) => u())
-        }),
-      )
-
-      unlisteners.push(
-        await listen<string>('ai-error', (event) => {
-          onError(new Error(event.payload))
-          unlisteners.forEach((u) => u())
-        }),
-      )
-
-      await invoke('ai_analyze_stream', { request: { diff, prompt } })
-    } catch (err) {
-      unlisteners.forEach((u) => u())
-      onError(err instanceof Error ? err : new Error(String(err)))
-    }
-  },
-
-  async parseIntent(input: string): Promise<{ intent: unknown; action: string }> {
-    const intent = await invoke('parse_intent', { request: { input } })
-    return { intent, action: '解析完成' }
   },
 }

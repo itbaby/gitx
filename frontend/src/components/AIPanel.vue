@@ -8,11 +8,13 @@ const props = defineProps<{
   messages: ChatMessage[]
   hasDiff: boolean
   loading: boolean
+  isStreaming: boolean
   toolStatus: string
 }>()
 
 const emit = defineEmits<{
   send: [text: string]
+  clear: []
 }>()
 
 const inputText = ref('')
@@ -87,6 +89,12 @@ const escapeHtml = (text: string): string => {
         </svg>
         <span>AI 助手</span>
       </div>
+      <button v-if="messages.length > 0" class="btn btn-ghost btn-sm" @click="emit('clear')" title="清除对话">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+          <path d="M11 1.75v5h1.25a.25.25 0 0 1 .177.427l-3.25 3.25a.25.25 0 0 1-.354 0l-3.25-3.25A.25.25 0 0 1 6.75 6.75H8V1.75a.25.25 0 0 1 .25-.25h2.5a.25.25 0 0 1 .25.25Z"/>
+          <path d="M1.5 12.75a.25.25 0 0 1 .25-.25h4.5a.25.25 0 0 1 .25.25v1.5a.25.25 0 0 1-.25.25h-4.5a.25.25 0 0 1-.25-.25Z"/>
+        </svg>
+      </button>
     </div>
 
     <!-- 快捷提示 -->
@@ -149,13 +157,13 @@ const escapeHtml = (text: string): string => {
           v-model="inputText"
           placeholder="输入消息... (Enter 发送)"
           rows="1"
-          :disabled="loading"
+          :disabled="loading || isStreaming"
           @keydown="handleKeyDown"
           @input="autoResize($event)"
         ></textarea>
         <button
           class="btn btn-primary send-btn"
-          :disabled="loading || !inputText.trim()"
+          :disabled="loading || isStreaming || !inputText.trim()"
           @click="handleSend"
         >
           <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">

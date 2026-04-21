@@ -7,12 +7,16 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, MutexGuard};
 use tauri::State;
 
-/// Lock a Mutex with better error context and recovery from poisoning.
+/// Lock a Mutex with recovery from poisoning.
+/// If a previous holder panicked, we recover the inner value and continue.
 fn lock_state<T>(lock: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
-    lock.lock().or_else(|e: std::sync::PoisonError<MutexGuard<T>>| {
-        eprintln!("Mutex poisoned, recovering: {}", e);
-        Ok(e.into_inner())
-    }).map_err(|e: std::sync::PoisonError<MutexGuard<T>>| format!("状态锁不可用: {}", e))
+    match lock.lock() {
+        Ok(guard) => Ok(guard),
+        Err(e) => {
+            eprintln!("Mutex poisoned, recovering: {}", e);
+            Ok(e.into_inner())
+        }
+    }
 }
 
 // ============================================================

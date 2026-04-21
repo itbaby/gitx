@@ -18,8 +18,11 @@ const fileHistory = ref<CommitInfo[]>([])
 const aiMessages = ref<ChatMessage[]>([])
 const toolStatus = ref('')
 const loading = ref(false)
+const isStreaming = ref(false)
 const activeTab = ref<'diff' | 'history' | 'commits'>('diff')
 const error = ref('')
+
+const MAX_AI_MESSAGES = 100
 
 // Diff 统计
 const diffStats = computed(() => {
@@ -52,7 +55,7 @@ const openRepo = async (path: string) => {
     compareBranch.value = currentBranch.value
     baseBranch.value = branches.value.includes('main') ? 'main' : branches.value.includes('master') ? 'master' : branches.value[0]
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = friendlyError(e)
   } finally {
     loading.value = false
   }
@@ -63,7 +66,7 @@ const fetchBranches = async () => {
     const res = await gitApi.getBranches()
     branches.value = res.branches
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = friendlyError(e)
   }
 }
 
@@ -77,7 +80,7 @@ const compareBranches = async (b1: string, b2: string) => {
     const commitRes = await gitApi.getCommits(b2, 30)
     commits.value = commitRes.commits
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = friendlyError(e)
     diffData.value = []
   } finally {
     loading.value = false
@@ -92,7 +95,7 @@ const fetchCommits = async (branch?: string) => {
     const res = await gitApi.getCommits(branch || currentBranch.value, 50)
     commits.value = res.commits
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = friendlyError(e)
   } finally {
     loading.value = false
   }
@@ -106,7 +109,7 @@ const fetchFileHistory = async (file: string, timeRange = '3d') => {
     const res = await gitApi.getFileHistory(file, timeRange)
     fileHistory.value = res.commits
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = friendlyError(e)
   } finally {
     loading.value = false
   }
@@ -131,10 +134,20 @@ const handleChat = async (text: string) => {
     isStreaming: true,
   }
   aiMessages.value.push(aiMsg)
+  isStreaming.value = true
 
-  const chatHistory: InputMessage[] = aiMessages.value
-    .filter((m) => m.role === 'user' || (m.role === 'assistant' && !m.isStreaming))
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+  // Trim old messages to prevent unbounded growth
+  if (aiMessages.value.length > MAX_AI_MESSAGES) {
+    aiMessages.value = aiMessages.value.slice(-MAX_AI_MESSAGES)
+  }
+
+  // Build chat history from non-streaming messages only (for token efficiency)
+  const historyMessages = aiMessages.value.filter(
+    (m) => m.role === 'user' || (m.role === 'assistant' && !m.isStreaming)
+  )
+  const chatHistory: InputMessage[] = historyMessages.slice(-20).map(
+    (m) => ({ role: m.role as 'user' | 'assistant', content: m.content })
+  )
 
   const chatCtx: ChatContext = {
     base_branch: baseBranch.value,
@@ -151,18 +164,41 @@ const handleChat = async (text: string) => {
         toolStatus.value = ''
         aiMsg.content += chunk
       },
-      () => { aiMsg.isStreaming = false },
-      (err) => {
-        aiMsg.content = `请求失败: ${err.message}`
+      () => {
         aiMsg.isStreaming = false
+        isStreaming.value = false
+      },
+      (err) => {
+        aiMsg.content = `请求失败: ${friendlyError(err)}`
+        aiMsg.isStreaming = false
+        isStreaming.value = false
         toolStatus.value = ''
       },
     )
-  } catch (err: any) {
-    aiMsg.content = `请求失败: ${err.message}`
+  } catch (err: unknown) {
+    aiMsg.content = `请求失败: ${friendlyError(err)}`
     aiMsg.isStreaming = false
+    isStreaming.value = false
     toolStatus.value = ''
   }
+}
+
+const clearChat = () => {
+  aiMessages.value = []
+  toolStatus.value = ''
+  isStreaming.value = false
+}
+
+/** Map raw errors to user-friendly messages. */
+const friendlyError = (err: unknown): string => {
+  if (!(err instanceof Error)) return String(err)
+  const msg = err.message
+  if (msg.includes('AI 客户端未初始化')) return 'AI 功能未配置，请检查 .env 文件中的 OPENAI_API_KEY'
+  if (msg.includes('AI API 错误 (401)')) return 'API Key 无效，请检查配置'
+  if (msg.includes('AI API 错误 (429)')) return '请求过于频繁，请稍后再试'
+  if (msg.includes('AI API 错误')) return 'AI 服务暂时不可用，请稍后再试'
+  if (msg.includes('AI API 请求失败')) return '无法连接到 AI 服务，请检查网络'
+  return msg
 }
 
 const onBaseBranchChange = (branch: string) => { baseBranch.value = branch }
@@ -241,8 +277,10 @@ const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value)
         :messages="aiMessages"
         :has-diff="diffData.length > 0"
         :loading="loading"
+        :is-streaming="isStreaming"
         :tool-status="toolStatus"
         @send="handleChat"
+        @clear="clearChat"
       />
     </div>
   </div>
