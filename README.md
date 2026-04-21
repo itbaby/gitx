@@ -1,7 +1,7 @@
 # GitX
 
 <p align="center">
-  <img src="docs/gitx-arch.svg" alt="GitX Architecture" width="800" />
+  <img src="https://github.com/itbaby/gitx/raw/main/docs/gitx-arch.png" alt="GitX Architecture" width="800" />
 </p>
 
 <h2 align="center">AI-Powered Git Diff Analyzer</h2>
