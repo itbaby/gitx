@@ -194,13 +194,19 @@ impl GitState {
         file_path: &str,
         since_timestamp: i64,
     ) -> Result<Vec<CommitInfo>, String> {
+        const MAX_SCAN: usize = 2000;
+
         let repo = self.open_handle()?;
         let branches = self.get_branches()?;
 
         let mut commit_set = std::collections::HashSet::new();
         let mut commits: Vec<CommitInfo> = Vec::new();
+        let mut scanned = 0usize;
 
         for branch in &branches {
+            if scanned >= MAX_SCAN {
+                break;
+            }
             if let Ok(reference) = repo.find_reference(&format!("refs/heads/{}", branch)) {
                 if let Some(target) = reference.target() {
                     if let Ok(mut revwalk) = repo.revwalk() {
@@ -208,6 +214,10 @@ impl GitState {
                             .push(target)
                             .map_err(|e| format!("push rev 失败: {}", e))?;
                         for oid in revwalk {
+                            if scanned >= MAX_SCAN {
+                                break;
+                            }
+                            scanned += 1;
                             let oid = oid.map_err(|e| format!("遍历提交失败: {}", e))?;
                             if commit_set.contains(&oid) {
                                 continue;
@@ -279,7 +289,7 @@ impl GitState {
                               _hunk: Option<git2::DiffHunk>,
                               line: git2::DiffLine| {
                             let origin = line.origin();
-                            let content = std::str::from_utf8(line.content()).unwrap_or("");
+                            let content = std::str::from_utf8(line.content()).unwrap_or("").trim_end();
                             match origin {
                                 '+' => buf.push_str(&format!("+{}\n", content)),
                                 '-' => buf.push_str(&format!("-{}\n", content)),

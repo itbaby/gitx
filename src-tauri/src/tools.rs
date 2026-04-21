@@ -5,6 +5,39 @@ use serde_json::{json, Value};
 const MAX_PATCH_CHARS: usize = 2000;
 const MAX_RESULT_CHARS: usize = 25000;
 
+/// Validate a branch name contains only safe characters.
+fn validate_branch(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-' || c == '.') {
+        return Err(format!("分支名包含非法字符: {}", name));
+    }
+    Ok(())
+}
+
+/// Validate a commit hash is hex-only and reasonable length.
+fn validate_hash(hash: &str) -> Result<(), String> {
+    if hash.is_empty() {
+        return Err("提交哈希不能为空".to_string());
+    }
+    if !hash.chars().all(|c| c.is_ascii_hexdigit()) || hash.len() > 40 {
+        return Err(format!("无效的提交哈希: {}", hash));
+    }
+    Ok(())
+}
+
+/// Validate a file path doesn't contain traversal sequences.
+fn validate_file_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("文件路径不能为空".to_string());
+    }
+    if path.contains("..") {
+        return Err(format!("文件路径不能包含 ..: {}", path));
+    }
+    Ok(())
+}
+
 // ============================================================
 // Tool Definitions (OpenAI Function Calling format)
 // ============================================================
@@ -184,6 +217,9 @@ fn exec_get_branch_diff(git_state: &GitState, args: &Value) -> String {
     if b1.is_empty() || b2.is_empty() {
         return "缺少必要参数: branch1, branch2".to_string();
     }
+    if let Err(e) = validate_branch(b1).and_then(|_| validate_branch(b2)) {
+        return format!("参数验证失败: {}", e);
+    }
 
     match git_state.get_branch_diff(b1, b2) {
         Ok(diff) => {
@@ -216,6 +252,9 @@ fn exec_get_file_history(git_state: &GitState, args: &Value) -> String {
     if file.is_empty() {
         return "缺少必要参数: file".to_string();
     }
+    if let Err(e) = validate_file_path(file) {
+        return format!("参数验证失败: {}", e);
+    }
 
     let since = match intent::parse_time_range(time_range) {
         Ok(s) => s,
@@ -237,6 +276,9 @@ fn exec_get_diff(git_state: &GitState, args: &Value) -> String {
 
     if from.is_empty() || to.is_empty() {
         return "缺少必要参数: from, to".to_string();
+    }
+    if let Err(e) = validate_hash(from).and_then(|_| validate_hash(to)) {
+        return format!("参数验证失败: {}", e);
     }
 
     match git_state.get_diff(from, to) {

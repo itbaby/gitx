@@ -28,7 +28,11 @@ impl AiConfig {
             model,
             api_key,
             base_url,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         })
     }
 
@@ -85,6 +89,12 @@ impl AiConfig {
             .send()
             .await
             .map_err(|e| format!("AI API 请求失败: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("AI API 错误 ({}): {}", status, body));
+        }
 
         let result: Value = response
             .json()
@@ -146,6 +156,12 @@ impl AiConfig {
             .send()
             .await
             .map_err(|e| format!("AI 流式请求失败: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("AI API 错误 ({}): {}", status, body));
+        }
 
         let mut stream = response.bytes_stream();
 
@@ -326,6 +342,12 @@ async fn send_non_streaming(config: &AiConfig, body: &Value) -> Result<Value, St
         .send()
         .await
         .map_err(|e| format!("AI API 请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("AI API 错误 ({}): {}", status, body));
+    }
 
     response
         .json()

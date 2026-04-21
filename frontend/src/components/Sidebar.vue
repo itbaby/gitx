@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
+// Detect Tauri environment
+const isTauri = () => typeof window !== 'undefined' && '__TAURI__' in window
+
 const props = defineProps<{
   repoPath: string
   branches: string[]
@@ -43,6 +46,24 @@ const handleRefresh = () => {
   emit('refresh-branches')
 }
 
+const handleBrowse = async () => {
+  if (!isTauri()) return
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: '选择 Git 仓库',
+    })
+    if (selected) {
+      inputPath.value = selected as string
+      handleOpen()
+    }
+  } catch {
+    // Fallback: do nothing
+  }
+}
+
 const getBranchIcon = (branch: string) => {
   if (branch === props.currentBranch) return '⎇'
   return '├'
@@ -72,6 +93,15 @@ const getBranchIcon = (branch: string) => {
               :disabled="loading"
               @keydown="handleKeyDown"
             />
+            <button
+              v-if="isTauri()"
+              class="btn btn-secondary btn-sm browse-btn"
+              :disabled="loading"
+              @click="handleBrowse"
+              title="浏览文件夹"
+            >
+              ...
+            </button>
             <button class="btn btn-primary btn-sm" :disabled="loading || !inputPath.trim()" @click="handleOpen">
               打开
             </button>
@@ -212,6 +242,13 @@ const getBranchIcon = (branch: string) => {
   flex: 1;
   font-size: var(--text-sm);
   padding: var(--space-xs) var(--space-sm);
+}
+
+.browse-btn {
+  padding: 2px var(--space-sm);
+  font-family: var(--font-mono);
+  min-width: 32px;
+  justify-content: center;
 }
 
 .repo-info {
