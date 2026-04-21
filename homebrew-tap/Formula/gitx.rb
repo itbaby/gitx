@@ -2,26 +2,27 @@
 
 # Documentation: https://docs.brew.sh/Formula-Cookbook
 class Gitx < Formula
-  desc "AI-Powered Git Diff Analyzer"
+  desc "AI-Powered Git Diff Analyzer for macOS and Linux"
   homepage "https://github.com/itbaby/gitx"
-  version "0.1.0"
+  url "https://github.com/itbaby/gitx/releases/download/v0.1.1/gitx-0.1.1.tar.gz"
+  version "0.1.1"
   license "MIT"
   head "https://github.com/itbaby/gitx.git", branch: "main"
 
   on_macos do
     on_intel do
-      url "https://github.com/itbaby/gitx/releases/download/v0.1.0/GitX_0.1.0_x86_64.dmg"
+      url "https://github.com/itbaby/gitx/releases/download/v0.1.1/GitX_0.1.1_x86_64.dmg"
       sha256 "X86_64_SHA256_PLACEHOLDER"
     end
 
     on_arm do
-      url "https://github.com/itbaby/gitx/releases/download/v0.1.0/GitX_0.1.0_aarch64.dmg"
+      url "https://github.com/itbaby/gitx/releases/download/v0.1.1/GitX_0.1.1_aarch64.dmg"
       sha256 "ARM64_SHA256_PLACEHOLDER"
     end
   end
 
   on_linux do
-    url "https://github.com/itbaby/gitx/releases/download/v0.1.0/gitx_0.1.0_amd64.deb"
+    url "https://github.com/itbaby/gitx/releases/download/v0.1.1/gitx_0.1.1_amd64.deb"
     sha256 "LINUX_SHA256_PLACEHOLDER"
   end
 
