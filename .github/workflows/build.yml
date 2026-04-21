@@ -3,7 +3,6 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -14,14 +13,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: --target aarch64-apple-darwin
-          - platform: macos-latest
-            args: --target x86_64-apple-darwin
+          # macOS 14 = Apple Silicon, macOS-latest = Intel
+          - platform: macos-14
+            target: aarch64-apple-darwin
           - platform: ubuntu-22.04
-            args: ""
+            target: x86_64-unknown-linux-gnu
           - platform: windows-latest
-            args: ""
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +33,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
 
       - name: Install dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
@@ -43,29 +41,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Install macOS dependencies (Intel build)
+        if: matrix.platform == 'macos-latest'
+        run: brew install openssl@3
+
+      - name: Set OpenSSL environment
+        if: matrix.platform == 'macos-latest'
+        run: echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm install
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "GitX ${{ github.ref_name }}"
-          releaseBody: "See the assets to download this version and install."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
-
-  release:
-    name: Create release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
+          args: --target ${{ matrix.target }}
