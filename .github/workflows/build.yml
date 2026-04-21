@@ -18,9 +18,6 @@ jobs:
             target: aarch64-apple-darwin
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          # Windows 构建需要 Visual Studio Build Tools，暂时禁用
-          # - platform: windows-latest
-          #   target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
+          cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Rust stable
@@ -42,17 +39,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install macOS dependencies (Intel build)
-        if: matrix.platform == 'macos-latest'
-        run: brew install openssl@3
-
-      - name: Set OpenSSL environment
-        if: matrix.platform == 'macos-latest'
-        run: echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-
       - name: Install frontend dependencies
+        run: npm install
         working-directory: frontend
-        run: npm ci
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
