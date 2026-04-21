@@ -4,7 +4,6 @@
   "version": "0.1.0",
   "identifier": "com.gitx.app",
   "build": {
-    "devtools": true,
     "beforeDevCommand": "cd ../frontend && npm run dev",
     "beforeBuildCommand": "cd ../frontend && npm run build",
     "devUrl": "http://localhost:5173",
