@@ -1,7 +1,7 @@
 # GitX
 
 <p align="center">
-  <img src="logo.png" alt="GitX Logo" width="320" />
+  <img src="logo.png" alt="GitX Logo" width="800" />
 </p>
 
 <h2 align="center">AI-Powered Git Diff Analyzer</h2>
