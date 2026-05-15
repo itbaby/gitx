@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 import { useGitStore } from './composables/useGitStore'
 import { useAiChat } from './composables/useAiChat'
 import Sidebar from './components/Sidebar.vue'
