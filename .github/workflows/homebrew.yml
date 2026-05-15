@@ -23,6 +23,7 @@ jobs:
 
       - name: Install Xcode Gen
         if: false  # Only needed if regenerating project
+        run: echo "Skipping Xcode Gen install"
 
       - name: Get release info
         id: release
