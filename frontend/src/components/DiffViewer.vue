@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import DOMPurify from 'dompurify'
 import type { DiffInfo } from '../types'
 import * as Diff2Html from 'diff2html'
@@ -41,20 +41,12 @@ const props = defineProps<{
   compareBranch: string
 }>()
 
-const diffHtml = ref('')
 const selectedFile = ref<string | null>(null)
 const viewMode = ref<'side-by-side' | 'line-by-line'>('side-by-side')
 
-const toggleViewMode = () => {
-  viewMode.value = viewMode.value === 'side-by-side' ? 'line-by-line' : 'side-by-side'
-  renderDiff()
-}
-
-const renderDiff = () => {
-  if (!props.diffData || props.diffData.length === 0) {
-    diffHtml.value = ''
-    return
-  }
+// Memoized computed property for diff HTML generation
+const diffHtml = computed(() => {
+  if (!props.diffData || props.diffData.length === 0) return ''
 
   const filesToRender = selectedFile.value
     ? props.diffData.filter(d => d.file === selectedFile.value)
@@ -62,36 +54,66 @@ const renderDiff = () => {
 
   const diffString = filesToRender.map(d => d.patch).join('\n')
 
-  if (!diffString.trim()) {
-    diffHtml.value = ''
-    return
-  }
+  if (!diffString.trim()) return ''
 
-  diffHtml.value = DOMPurify.sanitize(Diff2Html.html(diffString, {
+  return DOMPurify.sanitize(Diff2Html.html(diffString, {
     drawFileList: false,
     matching: 'lines',
     outputFormat: viewMode.value,
     renderNothingWhenEmpty: true,
   }))
+})
 
-  nextTick(() => {
-    applySyntaxHighlighting()
-  })
+const toggleViewMode = () => {
+  viewMode.value = viewMode.value === 'side-by-side' ? 'line-by-line' : 'side-by-side'
 }
 
 const diffContainer = ref<HTMLElement | null>(null)
 
-const applySyntaxHighlighting = () => {
+// IntersectionObserver for lazy syntax highlighting
+let observer: IntersectionObserver | null = null
+const highlightedElements = new WeakSet<HTMLElement>()
+
+const setupLazyHighlighting = () => {
+  if (observer) observer.disconnect()
+
+  observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        const el = entry.target as HTMLElement
+        if (!highlightedElements.has(el)) {
+          highlightedElements.add(el)
+          hljs.highlightElement(el)
+        }
+        if (observer) observer.unobserve(el)
+      }
+    }
+  }, { rootMargin: '100px' })
+
   if (!diffContainer.value) return
   diffContainer.value.querySelectorAll('pre code').forEach((block) => {
-    hljs.highlightElement(block as HTMLElement)
+    if (observer) observer.observe(block as HTMLElement)
   })
 }
 
-watch([() => props.diffData, selectedFile, viewMode], renderDiff)
+// Re-apply highlighting when computed diffHtml changes
+watch(diffHtml, () => {
+  nextTick(() => {
+    setupLazyHighlighting()
+  })
+})
 
 onMounted(() => {
-  renderDiff()
+  nextTick(() => {
+    setupLazyHighlighting()
+  })
+})
+
+onBeforeUnmount(() => {
+  if (observer) {
+    observer.disconnect()
+    observer = null
+  }
 })
 </script>
 
@@ -108,7 +130,7 @@ onMounted(() => {
       </div>
 
       <div class="diff-actions">
-        <button class="btn btn-ghost btn-sm" @click="toggleViewMode" :title="viewMode === 'side-by-side' ? '切换到行内模式' : '切换到并排模式'">
+        <button class="btn btn-ghost btn-sm" @click="toggleViewMode" :title="viewMode === 'side-by-side' ? '切换到行内模式' : '切换到并排模式'" :aria-label="viewMode === 'side-by-side' ? '切换到行内模式' : '切换到并排模式'">
           <svg v-if="viewMode === 'side-by-side'" viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
             <path d="M2 2h12a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm0 1v10h5V3Zm6 10h6V3H8Z"/>
           </svg>
@@ -148,7 +170,7 @@ onMounted(() => {
 
     <!-- 无差异 -->
     <div v-else class="no-diff">
-      <p>两个分支之间没有差异 🎉</p>
+      <p>两个分支之间没有差异</p>
     </div>
   </div>
 </template>
@@ -214,10 +236,6 @@ onMounted(() => {
   background-color: var(--accent-subtle);
 }
 
-.file-tab.all {
-  color: var(--color-info);
-}
-
 .file-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -254,10 +272,5 @@ onMounted(() => {
   height: 200px;
   color: var(--text-tertiary);
   font-size: var(--text-md);
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

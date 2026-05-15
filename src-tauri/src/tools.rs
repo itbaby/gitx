@@ -6,18 +6,21 @@ const MAX_PATCH_CHARS: usize = 2000;
 const MAX_RESULT_CHARS: usize = 25000;
 
 /// Validate a branch name contains only safe characters.
-fn validate_branch(name: &str) -> Result<(), String> {
+pub fn validate_branch(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("分支名不能为空".to_string());
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-' || c == '.') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-' || c == '.')
+    {
         return Err(format!("分支名包含非法字符: {}", name));
     }
     Ok(())
 }
 
 /// Validate a commit hash is hex-only and reasonable length.
-fn validate_hash(hash: &str) -> Result<(), String> {
+pub fn validate_hash(hash: &str) -> Result<(), String> {
     if hash.is_empty() {
         return Err("提交哈希不能为空".to_string());
     }
@@ -28,7 +31,7 @@ fn validate_hash(hash: &str) -> Result<(), String> {
 }
 
 /// Validate a file path doesn't contain traversal sequences.
-fn validate_file_path(path: &str) -> Result<(), String> {
+pub fn validate_file_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("文件路径不能为空".to_string());
     }
@@ -160,20 +163,22 @@ pub fn get_tool_defs() -> Vec<Value> {
 // ============================================================
 
 pub fn call_tool(name: &str, arguments: &str, repo_path: &Option<String>) -> String {
-    // Open repo from path
-    let path = match repo_path {
-        Some(p) if !p.is_empty() => p.clone(),
-        _ => return "错误：未打开仓库，无法执行工具".to_string(),
+    let path = match repo_path.as_ref().filter(|p| !p.is_empty()) {
+        Some(p) => p.clone(),
+        None => return "错误：未打开仓库，无法执行工具".to_string(),
     };
 
-    let mut git_state = GitState::new();
-    if let Err(e) = git_state.open_repo(&path) {
-        return format!("打开仓库失败: {}", e);
-    }
+    let git_state = match GitState::from_path(&path) {
+        Ok(gs) => gs,
+        Err(e) => return format!("打开仓库失败: {}", e),
+    };
     // Note: open_repo validates the repo exists; actual Repository handles
     // are opened per-call inside GitState methods (thread-safe pattern).
 
-    let args: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
+    let args: Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => return format!("工具参数解析失败: {}", e),
+    };
 
     match name {
         "get_branches" => exec_get_branches(&git_state),
@@ -234,7 +239,12 @@ fn exec_get_branch_diff(git_state: &GitState, args: &Value) -> String {
 
 fn exec_get_commits(git_state: &GitState, args: &Value) -> String {
     let branch = args["branch"].as_str().map(|s| s.to_string());
-    let limit = args["limit"].as_i64().unwrap_or(20) as i32;
+    if let Some(ref b) = branch {
+        if let Err(e) = validate_branch(b) {
+            return format!("参数验证失败: {}", e);
+        }
+    }
+    let limit = (args["limit"].as_i64().unwrap_or(20) as i32).min(100);
 
     match git_state.get_commits(branch.as_deref(), limit) {
         Ok(commits) => {
@@ -296,7 +306,7 @@ fn exec_get_diff(git_state: &GitState, args: &Value) -> String {
 // Helpers
 // ============================================================
 
-fn format_diff(diff: &[crate::DiffInfo]) -> String {
+pub fn format_diff(diff: &[crate::DiffInfo]) -> String {
     let mut buf = String::new();
     for (i, d) in diff.iter().enumerate() {
         if i > 0 {
@@ -320,5 +330,144 @@ fn truncate_result(result: String) -> String {
         format!("{}\n\n...(内容过长已截断)", truncated)
     } else {
         result
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DiffInfo;
+
+    // --- validate_branch ---
+
+    #[test]
+    fn branch_valid_names() {
+        assert!(validate_branch("main").is_ok());
+        assert!(validate_branch("feature/login").is_ok());
+        assert!(validate_branch("fix/bug-123_test.v2").is_ok());
+        assert!(validate_branch("dev").is_ok());
+    }
+
+    #[test]
+    fn branch_empty_is_rejected() {
+        assert!(validate_branch("").is_err());
+    }
+
+    #[test]
+    fn branch_rejects_injection_chars() {
+        assert!(validate_branch("main; rm -rf /").is_err());
+        assert!(validate_branch("branch|cat /etc/passwd").is_err());
+        assert!(validate_branch("foo`bar`").is_err());
+        assert!(validate_branch("branch$HOME").is_err());
+    }
+
+    // --- validate_hash ---
+
+    #[test]
+    fn hash_valid_hex() {
+        assert!(validate_hash("abc123def456").is_ok());
+        assert!(validate_hash("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0").is_ok());
+    }
+
+    #[test]
+    fn hash_empty_is_rejected() {
+        assert!(validate_hash("").is_err());
+    }
+
+    #[test]
+    fn hash_too_long_rejected() {
+        assert!(validate_hash("a".repeat(41).as_str()).is_err());
+    }
+
+    #[test]
+    fn hash_non_hex_rejected() {
+        assert!(validate_hash("xyz123").is_err());
+        assert!(validate_hash("main;ls").is_err());
+    }
+
+    // --- validate_file_path ---
+
+    #[test]
+    fn file_path_valid() {
+        assert!(validate_file_path("src/main.rs").is_ok());
+        assert!(validate_file_path("README.md").is_ok());
+        assert!(validate_file_path("a/b/c/test.go").is_ok());
+    }
+
+    #[test]
+    fn file_path_empty_is_rejected() {
+        assert!(validate_file_path("").is_err());
+    }
+
+    #[test]
+    fn file_path_traversal_rejected() {
+        assert!(validate_file_path("../etc/passwd").is_err());
+        assert!(validate_file_path("foo/../../bar").is_err());
+    }
+
+    // --- format_diff ---
+
+    #[test]
+    fn format_diff_basic() {
+        let diffs = vec![
+            DiffInfo {
+                file: "src/main.rs".into(),
+                patch: "+ fn main() {\n+    println!(\"hello\");\n+ }".into(),
+                added: 3,
+                deleted: 0,
+            },
+        ];
+        let output = format_diff(&diffs);
+        assert!(output.contains("File: src/main.rs (+3 -0)"));
+        assert!(output.contains("+ fn main()"));
+    }
+
+    #[test]
+    fn format_diff_multiple_files() {
+        let diffs = vec![
+            DiffInfo {
+                file: "a.rs".into(),
+                patch: "+ line 1".into(),
+                added: 1,
+                deleted: 0,
+            },
+            DiffInfo {
+                file: "b.rs".into(),
+                patch: "- line 2".into(),
+                added: 0,
+                deleted: 1,
+            },
+        ];
+        let output = format_diff(&diffs);
+        assert!(output.contains("File: a.rs (+1 -0)"));
+        assert!(output.contains("File: b.rs (+0 -1)"));
+    }
+
+    #[test]
+    fn format_diff_empty() {
+        let output = format_diff(&[]);
+        assert!(output.is_empty());
+    }
+
+    // --- truncate_result ---
+
+    #[test]
+    fn truncate_short_result_unchanged() {
+        let short = "hello".to_string();
+        let result = truncate_result(short.clone());
+        assert_eq!(result, short);
+    }
+
+    #[test]
+    fn truncate_long_result() {
+        let long = "x".repeat(MAX_RESULT_CHARS + 100);
+        let result = truncate_result(long);
+        assert!(result.contains("...(内容过长已截断)"));
+        // Should be at most MAX_RESULT_CHARS chars before the truncation suffix
+        assert!(result.chars().count() <= MAX_RESULT_CHARS + 50);
     }
 }

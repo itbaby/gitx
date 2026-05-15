@@ -96,14 +96,11 @@ static TIME_RANGE_HOURS_CN: LazyLock<Regex> =
 
 static TIME_RANGE_PARSE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)([dhm])").unwrap());
 
-static FILE_QUOTED_DQ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""([^"]+\.\w+)""#).unwrap());
+static FILE_QUOTED_DQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"]+\.\w+)""#).unwrap());
 
-static FILE_QUOTED_SQ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"'([^']+\.\w+)'").unwrap());
+static FILE_QUOTED_SQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"'([^']+\.\w+)'").unwrap());
 
-static FILE_PATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([\w./\\-]+\.\w+)").unwrap());
+static FILE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([\w./\\-]+\.\w+)").unwrap());
 
 // ============================================================
 // Parse Intent

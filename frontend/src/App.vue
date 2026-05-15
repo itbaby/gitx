@@ -1,213 +1,114 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import type { DiffInfo, CommitInfo, ChatMessage, InputMessage, ChatContext } from './types'
-import { gitApi, aiApi } from './api'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { useGitStore } from './composables/useGitStore'
+import { useAiChat } from './composables/useAiChat'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './components/MainContent.vue'
 import AIPanel from './components/AIPanel.vue'
 
-// 应用状态
-const repoPath = ref('')
-const branches = ref<string[]>([])
-const currentBranch = ref('')
-const baseBranch = ref('')
-const compareBranch = ref('')
-const diffData = ref<DiffInfo[]>([])
-const commits = ref<CommitInfo[]>([])
-const fileHistory = ref<CommitInfo[]>([])
-const aiMessages = ref<ChatMessage[]>([])
-const toolStatus = ref('')
-const loading = ref(false)
-const isStreaming = ref(false)
-const activeTab = ref<'diff' | 'history' | 'commits'>('diff')
-const error = ref('')
+// ---- Panel resize ----
 
-const MAX_AI_MESSAGES = 100
+const sidebarWidth = ref(260)
+const aiPanelWidth = ref(340)
+const MIN_SIDEBAR = 180
+const MAX_SIDEBAR = 500
+const MIN_AI_PANEL = 260
+const MAX_AI_PANEL = 600
 
-// Diff 统计
-const diffStats = computed(() => {
-  const stats = { totalFiles: 0, totalAdded: 0, totalDeleted: 0 }
-  for (const d of diffData.value) {
-    stats.totalFiles++
-    stats.totalAdded += d.added
-    stats.totalDeleted += d.deleted
+interface DragState {
+  handle: 'sidebar' | 'ai-panel'
+  startX: number
+  startWidth: number
+}
+
+let dragState: DragState | null = null
+
+function onHandleMouseDown(handle: 'sidebar' | 'ai-panel', e: MouseEvent) {
+  dragState = {
+    handle,
+    startX: e.clientX,
+    startWidth: handle === 'sidebar' ? sidebarWidth.value : aiPanelWidth.value,
   }
-  return stats
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  e.preventDefault()
+}
+
+function onMouseMove(e: MouseEvent) {
+  if (!dragState) return
+  const delta = e.clientX - dragState.startX
+  if (dragState.handle === 'sidebar') {
+    sidebarWidth.value = Math.min(MAX_SIDEBAR, Math.max(MIN_SIDEBAR, dragState.startWidth + delta))
+  } else {
+    aiPanelWidth.value = Math.min(MAX_AI_PANEL, Math.max(MIN_AI_PANEL, dragState.startWidth - delta))
+  }
+}
+
+function onMouseUp() {
+  dragState = null
+  document.removeEventListener('mousemove', onMouseMove)
+  document.removeEventListener('mouseup', onMouseUp)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousemove', onMouseMove)
+  document.removeEventListener('mouseup', onMouseUp)
 })
 
-// 是否已打开仓库
-const hasRepo = computed(() => !!repoPath.value)
+// ---- Keyboard shortcuts ----
 
-// ---- Git 操作 ----
-
-const openRepo = async (path: string) => {
-  loading.value = true
-  error.value = ''
-  try {
-    await gitApi.openRepo(path)
-    repoPath.value = path
-    const [branchesRes, currentRes] = await Promise.all([
-      gitApi.getBranches(),
-      gitApi.getCurrentBranch(),
-    ])
-    branches.value = branchesRes.branches
-    currentBranch.value = currentRes.current_branch
-    compareBranch.value = currentBranch.value
-    baseBranch.value = branches.value.includes('main') ? 'main' : branches.value.includes('master') ? 'master' : branches.value[0]
-  } catch (e: unknown) {
-    error.value = friendlyError(e)
-  } finally {
-    loading.value = false
+function onKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && error.value) {
+    error.value = ''
   }
 }
 
-const fetchBranches = async () => {
-  try {
-    const res = await gitApi.getBranches()
-    branches.value = res.branches
-  } catch (e: unknown) {
-    error.value = friendlyError(e)
-  }
-}
+// Git store
+const {
+  repoPath,
+  branches,
+  currentBranch,
+  baseBranch,
+  compareBranch,
+  diffData,
+  commits,
+  fileHistory,
+  loading,
+  activeTab,
+  error,
+  diffStats,
+  hasRepo,
+  openRepo,
+  fetchBranches,
+  fetchCommits,
+  fetchFileHistory,
+  fetchCommitDiff,
+  onBaseBranchChange,
+  onCompareBranchChange,
+  onCompare,
+} = useGitStore()
 
-const compareBranches = async (b1: string, b2: string) => {
-  loading.value = true
-  error.value = ''
-  activeTab.value = 'diff'
-  try {
-    const res = await gitApi.getBranchDiff(b1, b2)
-    diffData.value = res.diff
-    const commitRes = await gitApi.getCommits(b2, 30)
-    commits.value = commitRes.commits
-  } catch (e: unknown) {
-    error.value = friendlyError(e)
-    diffData.value = []
-  } finally {
-    loading.value = false
-  }
-}
-
-const fetchCommits = async (branch?: string) => {
-  loading.value = true
-  error.value = ''
-  activeTab.value = 'commits'
-  try {
-    const res = await gitApi.getCommits(branch || currentBranch.value, 50)
-    commits.value = res.commits
-  } catch (e: unknown) {
-    error.value = friendlyError(e)
-  } finally {
-    loading.value = false
-  }
-}
-
-const fetchFileHistory = async (file: string, timeRange = '3d') => {
-  loading.value = true
-  error.value = ''
-  activeTab.value = 'history'
-  try {
-    const res = await gitApi.getFileHistory(file, timeRange)
-    fileHistory.value = res.commits
-  } catch (e: unknown) {
-    error.value = friendlyError(e)
-  } finally {
-    loading.value = false
-  }
-}
-
-// ---- AI 操作 ----
-
-const handleChat = async (text: string) => {
-  const userMsg: ChatMessage = {
-    id: crypto.randomUUID(),
-    role: 'user',
-    content: text,
-    timestamp: new Date(),
-  }
-  aiMessages.value.push(userMsg)
-
-  const aiMsg: ChatMessage = {
-    id: crypto.randomUUID(),
-    role: 'assistant',
-    content: '',
-    timestamp: new Date(),
-    isStreaming: true,
-  }
-  aiMessages.value.push(aiMsg)
-  isStreaming.value = true
-
-  // Trim old messages to prevent unbounded growth
-  if (aiMessages.value.length > MAX_AI_MESSAGES) {
-    aiMessages.value = aiMessages.value.slice(-MAX_AI_MESSAGES)
-  }
-
-  // Build chat history from non-streaming messages only (for token efficiency)
-  const historyMessages = aiMessages.value.filter(
-    (m) => m.role === 'user' || (m.role === 'assistant' && !m.isStreaming)
-  )
-  const chatHistory: InputMessage[] = historyMessages.slice(-20).map(
-    (m) => ({ role: m.role as 'user' | 'assistant', content: m.content })
-  )
-
-  const chatCtx: ChatContext = {
-    base_branch: baseBranch.value,
-    compare_branch: compareBranch.value,
-    has_diff: diffData.value.length > 0,
-  }
-
-  try {
-    await aiApi.chat(
-      chatHistory,
-      chatCtx,
-      (_name, display) => { toolStatus.value = display },
-      (chunk) => {
-        toolStatus.value = ''
-        aiMsg.content += chunk
-      },
-      () => {
-        aiMsg.isStreaming = false
-        isStreaming.value = false
-      },
-      (err) => {
-        aiMsg.content = `请求失败: ${friendlyError(err)}`
-        aiMsg.isStreaming = false
-        isStreaming.value = false
-        toolStatus.value = ''
-      },
-    )
-  } catch (err: unknown) {
-    aiMsg.content = `请求失败: ${friendlyError(err)}`
-    aiMsg.isStreaming = false
-    isStreaming.value = false
-    toolStatus.value = ''
-  }
-}
-
-const clearChat = () => {
-  aiMessages.value = []
-  toolStatus.value = ''
-  isStreaming.value = false
-}
-
-/** Map raw errors to user-friendly messages. */
-const friendlyError = (err: unknown): string => {
-  if (!(err instanceof Error)) return String(err)
-  const msg = err.message
-  if (msg.includes('AI 客户端未初始化')) return 'AI 功能未配置，请检查 .env 文件中的 OPENAI_API_KEY'
-  if (msg.includes('AI API 错误 (401)')) return 'API Key 无效，请检查配置'
-  if (msg.includes('AI API 错误 (429)')) return '请求过于频繁，请稍后再试'
-  if (msg.includes('AI API 错误')) return 'AI 服务暂时不可用，请稍后再试'
-  if (msg.includes('AI API 请求失败')) return '无法连接到 AI 服务，请检查网络'
-  return msg
-}
-
-const onBaseBranchChange = (branch: string) => { baseBranch.value = branch }
-const onCompareBranchChange = (branch: string) => { compareBranch.value = branch }
-const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value) }
+// AI chat
+const {
+  aiMessages,
+  toolStatus,
+  isStreaming,
+  handleChat,
+  handleAnalyze,
+  clearChat,
+} = useAiChat(
+  () => baseBranch.value,
+  () => compareBranch.value,
+  () => diffData.value,
+)
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" @keydown="onKeyDown">
     <!-- 顶部栏 -->
     <header class="app-header">
       <div class="header-left">
@@ -235,15 +136,16 @@ const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value)
 
     <!-- 错误提示 -->
     <Transition name="error">
-      <div v-if="error" class="error-bar">
+      <div v-if="error" class="error-bar" role="alert">
         <span>{{ error }}</span>
-        <button class="btn btn-ghost btn-sm" @click="error = ''">✕</button>
+        <button class="btn btn-ghost btn-sm" @click="error = ''">&#10005;</button>
       </div>
     </Transition>
 
     <!-- 主内容区 -->
     <div class="app-body">
       <Sidebar
+        :style="{ width: sidebarWidth + 'px', minWidth: sidebarWidth + 'px' }"
         :repo-path="repoPath"
         :branches="branches"
         :current-branch="currentBranch"
@@ -257,6 +159,11 @@ const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value)
         @compare="onCompare"
       />
 
+      <div
+        class="resize-handle"
+        @mousedown="onHandleMouseDown('sidebar', $event)"
+      ></div>
+
       <MainContent
         :active-tab="activeTab"
         :diff-data="diffData"
@@ -268,18 +175,25 @@ const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value)
         :loading="loading"
         :has-repo="hasRepo"
         @tab-change="activeTab = $event"
-
+        @commit-select="fetchCommitDiff"
         @fetch-commits="fetchCommits"
         @fetch-file-history="fetchFileHistory"
       />
 
+      <div
+        class="resize-handle"
+        @mousedown="onHandleMouseDown('ai-panel', $event)"
+      ></div>
+
       <AIPanel
+        :style="{ width: aiPanelWidth + 'px', minWidth: aiPanelWidth + 'px' }"
         :messages="aiMessages"
         :has-diff="diffData.length > 0"
         :loading="loading"
         :is-streaming="isStreaming"
         :tool-status="toolStatus"
         @send="handleChat"
+        @analyze="handleAnalyze"
         @clear="clearChat"
       />
     </div>
@@ -384,5 +298,18 @@ const onCompare = () => { compareBranches(baseBranch.value, compareBranch.value)
   display: flex;
   flex: 1;
   overflow: hidden;
+}
+
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background-color: transparent;
+  transition: background-color var(--transition-fast);
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.resize-handle:hover {
+  background-color: var(--accent-muted);
 }
 </style>

@@ -1,5 +1,5 @@
 export const formatTimestamp = (ts: string): string => {
-  const date = new Date(ts)
+  const date = new Date(Number(ts) * 1000)
   if (isNaN(date.getTime())) return '未知时间'
 
   const now = new Date()
@@ -21,7 +21,7 @@ export const formatTimestamp = (ts: string): string => {
 }
 
 export const formatFullDate = (ts: string): string => {
-  const date = new Date(ts)
+  const date = new Date(Number(ts) * 1000)
   if (isNaN(date.getTime())) return '未知时间'
   return date.toLocaleString('zh-CN', {
     year: 'numeric',

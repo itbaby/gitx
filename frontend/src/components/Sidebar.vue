@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
 // Detect Tauri environment
-const isTauri = () => typeof window !== 'undefined' && '__TAURI__' in window
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 const props = defineProps<{
   repoPath: string
@@ -25,7 +25,6 @@ const inputPath = ref('')
 const isExpanded = ref(true)
 
 // 当仓库打开成功时，同步更新输入框
-import { watch } from 'vue'
 watch(() => props.repoPath, (val) => {
   if (val && !inputPath.value) {
     inputPath.value = val
@@ -59,9 +58,19 @@ const handleBrowse = async () => {
       inputPath.value = selected as string
       handleOpen()
     }
-  } catch {
-    // Fallback: do nothing
+  } catch (err) {
+    console.warn('File dialog failed:', err)
   }
+}
+
+const handleBaseBranchChange = (e: Event) => {
+  const target = e.target as HTMLSelectElement
+  if (target) emit('update:base-branch', target.value)
+}
+
+const handleCompareBranchChange = (e: Event) => {
+  const target = e.target as HTMLSelectElement
+  if (target) emit('update:compare-branch', target.value)
 }
 
 const getBranchIcon = (branch: string) => {
@@ -131,8 +140,12 @@ const getBranchIcon = (branch: string) => {
           v-for="branch in branches"
           :key="branch"
           class="branch-item"
+          role="button"
+          tabindex="0"
           :class="{ active: branch === currentBranch }"
           @click="emit('update:compare-branch', branch)"
+          @keydown.enter="emit('update:compare-branch', branch)"
+          @keydown.space.prevent="emit('update:compare-branch', branch)"
         >
           <span class="branch-icon">{{ getBranchIcon(branch) }}</span>
           <span class="branch-name">{{ branch }}</span>
@@ -150,7 +163,7 @@ const getBranchIcon = (branch: string) => {
       </div>
       <div class="compare-content">
         <label class="compare-label">基准分支</label>
-        <select :value="baseBranch" @change="emit('update:base-branch', ($event.target as HTMLSelectElement).value)">
+        <select :value="baseBranch" @change="handleBaseBranchChange">
           <option v-for="b in branches" :key="b" :value="b">{{ b }}</option>
         </select>
         <div class="compare-arrow">
@@ -159,7 +172,7 @@ const getBranchIcon = (branch: string) => {
           </svg>
         </div>
         <label class="compare-label">对比分支</label>
-        <select :value="compareBranch" @change="emit('update:compare-branch', ($event.target as HTMLSelectElement).value)">
+        <select :value="compareBranch" @change="handleCompareBranchChange">
           <option v-for="b in branches" :key="b" :value="b">{{ b }}</option>
         </select>
         <button class="btn btn-primary compare-btn" :disabled="loading || !baseBranch || !compareBranch" @click="emit('compare')">

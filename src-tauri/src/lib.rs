@@ -4,33 +4,38 @@ mod intent;
 mod tools;
 
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use tauri::State;
-
-/// Lock a Mutex with recovery from poisoning.
-/// If a previous holder panicked, we recover the inner value and continue.
-fn lock_state<T>(lock: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
-    match lock.lock() {
-        Ok(guard) => Ok(guard),
-        Err(e) => {
-            eprintln!("Mutex poisoned, recovering: {}", e);
-            Ok(e.into_inner())
-        }
-    }
-}
-
-// ============================================================
-// App State
-// ============================================================
+use tokio::sync::Semaphore;
 
 pub struct AppState {
     pub git: Mutex<git::GitState>,
     pub ai_config: Mutex<Option<ai::AiConfig>>,
+    pub ai_semaphore: Arc<Semaphore>,
 }
 
-// ============================================================
-// Common Types
-// ============================================================
+impl AppState {
+    fn repo_path(&self) -> Result<String, String> {
+        self.git.lock().unwrap().path()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "未打开仓库".to_string())
+    }
+}
+
+async fn spawn_git<T>(
+    path: String,
+    f: impl FnOnce(&git::GitState) -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let gs = git::GitState::from_path(&path)?;
+        f(&gs)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitInfo {
@@ -48,13 +53,6 @@ pub struct DiffInfo {
     pub patch: String,
     pub added: i32,
     pub deleted: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffStats {
-    pub total_files: i32,
-    pub total_added: i32,
-    pub total_deleted: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,27 +85,20 @@ pub struct IntentRequest {
     pub input: String,
 }
 
-// ============================================================
-// Tauri Commands - Git Operations
-// ============================================================
-
 #[tauri::command]
 async fn open_repo(state: State<'_, AppState>, path: String) -> Result<String, String> {
-    let mut git_state = lock_state(&state.git)?;
-    git_state.open_repo(&path)?;
+    state.git.lock().unwrap().open_repo(&path)?;
     Ok(format!("仓库打开成功: {}", path))
 }
 
 #[tauri::command]
 async fn get_branches(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let git_state = lock_state(&state.git)?;
-    git_state.get_branches()
+    spawn_git(state.repo_path()?, |gs| gs.get_branches()).await
 }
 
 #[tauri::command]
 async fn get_current_branch(state: State<'_, AppState>) -> Result<String, String> {
-    let git_state = lock_state(&state.git)?;
-    git_state.get_current_branch()
+    spawn_git(state.repo_path()?, |gs| gs.get_current_branch()).await
 }
 
 #[tauri::command]
@@ -116,8 +107,9 @@ async fn get_commits(
     branch: Option<String>,
     limit: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
-    let git_state = lock_state(&state.git)?;
-    git_state.get_commits(branch.as_deref(), limit.unwrap_or(20))
+    if let Some(ref b) = branch { tools::validate_branch(b)?; }
+    let limit = limit.unwrap_or(20).min(100);
+    spawn_git(state.repo_path()?, move |gs| gs.get_commits(branch.as_deref(), limit)).await
 }
 
 #[tauri::command]
@@ -126,8 +118,9 @@ async fn get_diff(
     from: String,
     to: String,
 ) -> Result<Vec<DiffInfo>, String> {
-    let git_state = lock_state(&state.git)?;
-    git_state.get_diff(&from, &to)
+    tools::validate_hash(&from)?;
+    tools::validate_hash(&to)?;
+    spawn_git(state.repo_path()?, move |gs| gs.get_diff(&from, &to)).await
 }
 
 #[tauri::command]
@@ -136,8 +129,18 @@ async fn get_branch_diff(
     branch1: String,
     branch2: String,
 ) -> Result<Vec<DiffInfo>, String> {
-    let git_state = lock_state(&state.git)?;
-    git_state.get_branch_diff(&branch1, &branch2)
+    tools::validate_branch(&branch1)?;
+    tools::validate_branch(&branch2)?;
+    spawn_git(state.repo_path()?, move |gs| gs.get_branch_diff(&branch1, &branch2)).await
+}
+
+#[tauri::command]
+async fn get_commit_diff(
+    state: State<'_, AppState>,
+    hash: String,
+) -> Result<Vec<DiffInfo>, String> {
+    tools::validate_hash(&hash)?;
+    spawn_git(state.repo_path()?, move |gs| gs.get_commit_diff(&hash)).await
 }
 
 #[tauri::command]
@@ -146,13 +149,13 @@ async fn get_file_history(
     file: String,
     time_range: Option<String>,
 ) -> Result<Vec<CommitInfo>, String> {
-    let git_state = lock_state(&state.git)?;
+    tools::validate_file_path(&file)?;
     let since = intent::parse_time_range(time_range.as_deref().unwrap_or("3d"))?;
-    git_state.get_file_history(&file, since)
+    spawn_git(state.repo_path()?, move |gs| gs.get_file_history(&file, since)).await
 }
 
 // ============================================================
-// Tauri Commands - AI Operations
+// AI Commands
 // ============================================================
 
 #[tauri::command]
@@ -161,37 +164,33 @@ async fn ai_chat(
     state: State<'_, AppState>,
     request: ChatRequest,
 ) -> Result<(), String> {
-    let config = {
-        let cfg_lock = lock_state(&state.ai_config)?;
-        cfg_lock.clone().ok_or("AI 客户端未初始化，请检查 .env 配置".to_string())?
-    };
+    if request.messages.len() > 50 {
+        return Err("消息历史过长，最多支持 50 条".into());
+    }
 
-    let tool_defs = tools::get_tool_defs();
+    let permit = state.ai_semaphore.clone().acquire_owned().await
+        .map_err(|e| format!("获取并发许可失败: {}", e))?;
 
-    // Clone repo path for the async task
-    let repo_path = {
-        let git_state = lock_state(&state.git)?;
-        git_state.path().map(|s| s.to_string())
-    };
+    let config = state.ai_config.lock().unwrap().clone()
+        .ok_or("AI 客户端未初始化，请检查 .env 配置")?;
+
+    let repo_path = state.git.lock().unwrap().path().map(|s| s.to_string());
 
     tokio::spawn(async move {
-        ai::run_agent_chat(app, config, request.messages, request.context, tool_defs, repo_path).await;
+        let _permit = permit;
+        ai::run_agent_chat(app, config, request.messages, request.context, tools::get_tool_defs(), repo_path).await;
     });
 
     Ok(())
 }
 
 #[tauri::command]
-async fn ai_analyze(
-    state: State<'_, AppState>,
-    request: AnalyzeRequest,
-) -> Result<String, String> {
-    let config = {
-        let cfg_lock = lock_state(&state.ai_config)?;
-        cfg_lock.clone().ok_or("AI 客户端未初始化".to_string())?
-    };
-    let diff_text = format_diff_for_ai(&request.diff);
-    config.analyze_diff(&diff_text, &request.prompt).await
+async fn ai_analyze(state: State<'_, AppState>, request: AnalyzeRequest) -> Result<String, String> {
+    let _permit = state.ai_semaphore.clone().acquire_owned().await
+        .map_err(|e| format!("获取并发许可失败: {}", e))?;
+    let config = state.ai_config.lock().unwrap().clone()
+        .ok_or("AI 客户端未初始化")?;
+    config.analyze_diff(&tools::format_diff(&request.diff), &request.prompt).await
 }
 
 #[tauri::command]
@@ -200,14 +199,14 @@ async fn ai_analyze_stream(
     state: State<'_, AppState>,
     request: AnalyzeRequest,
 ) -> Result<(), String> {
-    let config = {
-        let cfg_lock = lock_state(&state.ai_config)?;
-        cfg_lock.clone().ok_or("AI 客户端未初始化".to_string())?
-    };
-    let diff_text = format_diff_for_ai(&request.diff);
+    let permit = state.ai_semaphore.clone().acquire_owned().await
+        .map_err(|e| format!("获取并发许可失败: {}", e))?;
+    let config = state.ai_config.lock().unwrap().clone()
+        .ok_or("AI 客户端未初始化")?;
 
     tokio::spawn(async move {
-        config.analyze_diff_stream(&app, &diff_text, &request.prompt).await;
+        let _permit = permit;
+        config.analyze_diff_stream(&app, &tools::format_diff(&request.diff), &request.prompt).await;
     });
 
     Ok(())
@@ -215,37 +214,15 @@ async fn ai_analyze_stream(
 
 #[tauri::command]
 async fn parse_intent(request: IntentRequest) -> Result<serde_json::Value, String> {
-    let parsed = intent::parse_intent(&request.input);
-    Ok(serde_json::to_value(parsed).unwrap_or_default())
+    Ok(serde_json::to_value(intent::parse_intent(&request.input)).unwrap_or_default())
 }
-
-// ============================================================
-// Helper: Format diff for AI consumption
-// ============================================================
-
-fn format_diff_for_ai(diff: &[DiffInfo]) -> String {
-    let mut buf = String::new();
-    for d in diff {
-        buf.push_str(&format!("File: {}\n", d.file));
-        buf.push_str(&format!("Added: {}, Deleted: {}\n", d.added, d.deleted));
-        buf.push_str("Patch:\n");
-        buf.push_str(&d.patch);
-        buf.push_str("\n\n");
-    }
-    buf
-}
-
-// ============================================================
-// Tauri Plugin Registration
-// ============================================================
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load .env file (optional — only warn on non-NotFound errors)
-    match dotenvy::dotenv() {
-        Ok(_) => {}
-        Err(dotenvy::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("Warning: failed to load .env file: {}", e),
+    if let Err(e) = dotenvy::dotenv() {
+        if !matches!(&e, dotenvy::Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            eprintln!("Warning: failed to load .env file: {}", e);
+        }
     }
 
     tauri::Builder::default()
@@ -254,6 +231,7 @@ pub fn run() {
         .manage(AppState {
             git: Mutex::new(git::GitState::new()),
             ai_config: Mutex::new(ai::AiConfig::from_env()),
+            ai_semaphore: Arc::new(Semaphore::new(3)),
         })
         .invoke_handler(tauri::generate_handler![
             open_repo,
@@ -262,6 +240,7 @@ pub fn run() {
             get_commits,
             get_diff,
             get_branch_diff,
+            get_commit_diff,
             get_file_history,
             ai_chat,
             ai_analyze,

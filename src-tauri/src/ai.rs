@@ -1,4 +1,5 @@
 use crate::{ChatContext, InputMessage};
+use futures::StreamExt;
 use serde_json::{json, Value};
 use tauri::Emitter;
 
@@ -8,10 +9,29 @@ use tauri::Emitter;
 
 const ANALYSIS_SYSTEM_PROMPT: &str = "你是一个专业的 Git 代码差异分析助手。你的任务是根据提供的 Git diff 内容，回答用户的问题。\n\n分析 diff 时请注意：\n1. 哪些文件发生了变更\n2. 具体做了什么改动\n3. 改动的目的和影响范围\n4. 潜在的问题或改进建议\n\n请用中文回答，使用 Markdown 格式，让回答清晰、简洁、有结构。";
 
+/// Wrapper that masks the API key in Debug output.
+#[derive(Clone)]
+pub struct Secret(String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(**REDACTED**)")
+    }
+}
+
+impl Secret {
+    pub fn new(val: String) -> Self {
+        Self(val)
+    }
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 pub struct AiConfig {
     pub model: String,
-    pub api_key: String,
+    pub api_key: Secret,
     pub base_url: String,
     client: reqwest::Client,
 }
@@ -20,13 +40,12 @@ impl AiConfig {
     pub fn from_env() -> Option<Self> {
         let api_key = std::env::var("OPENAI_API_KEY").ok()?;
         let model = std::env::var("AI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-        let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| {
-            "https://api.openai.com/v1".to_string()
-        });
+        let base_url = std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
         Some(AiConfig {
             model,
-            api_key,
+            api_key: Secret::new(api_key),
             base_url,
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
@@ -48,7 +67,7 @@ impl AiConfig {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", self.api_key)
+            format!("Bearer {}", self.api_key.expose())
                 .parse()
                 .map_err(|e| format!("无效的 API key 格式: {}", e))?,
         );
@@ -66,10 +85,7 @@ impl AiConfig {
     // ========================================================
 
     pub async fn analyze_diff(&self, diff: &str, prompt: &str) -> Result<String, String> {
-        let user_prompt = format!(
-            "## Git Diff:\n```\n{}\n```\n\n## 问题:\n{}",
-            diff, prompt
-        );
+        let user_prompt = format!("## Git Diff:\n```\n{}\n```\n\n## 问题:\n{}", diff, prompt);
 
         let body = json!({
             "model": self.model,
@@ -111,16 +127,8 @@ impl AiConfig {
     // Streaming analysis
     // ========================================================
 
-    pub async fn analyze_diff_stream(
-        &self,
-        app: &tauri::AppHandle,
-        diff: &str,
-        prompt: &str,
-    ) {
-        let user_prompt = format!(
-            "## Git Diff:\n```\n{}\n```\n\n## 问题:\n{}",
-            diff, prompt
-        );
+    pub async fn analyze_diff_stream(&self, app: &tauri::AppHandle, diff: &str, prompt: &str) {
+        let user_prompt = format!("## Git Diff:\n```\n{}\n```\n\n## 问题:\n{}", diff, prompt);
 
         let body = json!({
             "model": self.model,
@@ -164,8 +172,6 @@ impl AiConfig {
         }
 
         let mut stream = response.bytes_stream();
-
-        use futures::StreamExt;
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
@@ -185,8 +191,7 @@ impl AiConfig {
                         }
 
                         if let Ok(parsed) = serde_json::from_str::<Value>(data) {
-                            if let Some(content) =
-                                parsed["choices"][0]["delta"]["content"].as_str()
+                            if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str()
                             {
                                 if !content.is_empty() {
                                     let ev_name = format!("ai-{}-chunk", event_prefix);
@@ -240,67 +245,94 @@ pub async fn run_agent_chat(
             "tool_choice": "auto"
         });
 
-        match send_non_streaming(&config, &body).await {
-            Ok(result) => {
+        // Retry transient failures up to 2 times.
+        let mut last_err: Option<String> = None;
+        let result = loop {
+            match send_non_streaming(&config, &body).await {
+                Ok(r) => break Some(r),
+                Err(e) => {
+                    if last_err.is_some() {
+                        // Already retried once; give up.
+                        last_err = Some(e);
+                        break None;
+                    }
+                    last_err = Some(e);
+                    // Brief backoff before retry.
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                    continue;
+                }
+            }
+        };
+
+        match result {
+            Some(result) => {
                 let choice = &result["choices"][0];
                 let msg = &choice["message"];
 
                 if let Some(tool_calls) = msg["tool_calls"].as_array() {
-                    if tool_calls.is_empty() {
+                    if !tool_calls.is_empty() {
                         messages.push(msg.clone());
-                        let stream_body = json!({
-                            "model": config.model,
-                            "messages": &messages,
-                            "stream": true
-                        });
-                        if let Err(e) = config.stream_sse(&app, stream_body, "chat").await {
-                            emit_log(&app, "ai-error", &e);
+
+                        for tc in tool_calls {
+                            let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
+                            let tool_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                            let tool_call_id = tc["id"].as_str().unwrap_or("").to_string();
+
+                            emit_log(
+                                &app,
+                                "ai-tool",
+                                &json!({
+                                    "name": tool_name,
+                                    "display": get_tool_display_name(tool_name)
+                                }),
+                            );
+
+                            let tn = tool_name.to_string();
+                            let ta = tool_args.to_string();
+                            let rp = repo_path.clone();
+                            let tool_result = tokio::task::spawn_blocking(move || {
+                                super::tools::call_tool(&tn, &ta, &rp)
+                            })
+                            .await
+                            .unwrap_or_else(|e| format!("工具执行失败: {}", e));
+
+                            emit_log(
+                                &app,
+                                "ai-tool-result",
+                                &json!({
+                                    "name": tool_name,
+                                    "result": truncate_for_display(&tool_result),
+                                }),
+                            );
+
+                            messages.push(json!({
+                                "role": "tool",
+                                "content": tool_result,
+                                "tool_call_id": tool_call_id
+                            }));
                         }
-                        return;
+                        continue;
                     }
-
-                    messages.push(msg.clone());
-
-                    for tc in tool_calls {
-                        let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
-                        let tool_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                        let tool_call_id = tc["id"].as_str().unwrap_or("").to_string();
-
-                        let display = get_tool_display_name(tool_name);
-                        emit_log(
-                            &app,
-                            "ai-tool",
-                            &json!({
-                                "name": tool_name,
-                                "display": display
-                            }),
-                        );
-
-                        let tool_result =
-                            super::tools::call_tool(tool_name, tool_args, &repo_path);
-
-                        messages.push(json!({
-                            "role": "tool",
-                            "content": tool_result,
-                            "tool_call_id": tool_call_id
-                        }));
-                    }
-                    continue;
-                } else {
-                    messages.push(msg.clone());
-                    let stream_body = json!({
-                        "model": config.model,
-                        "messages": &messages,
-                        "stream": true
-                    });
-                    if let Err(e) = config.stream_sse(&app, stream_body, "chat").await {
-                        emit_log(&app, "ai-error", &e);
-                    }
-                    return;
                 }
+
+                messages.push(msg.clone());
+                let stream_body = json!({
+                    "model": config.model,
+                    "messages": &messages,
+                    "stream": true
+                });
+                if let Err(e) = config.stream_sse(&app, stream_body, "chat").await {
+                    emit_log(&app, "ai-error", &e);
+                }
+                return;
             }
-            Err(e) => {
-                emit_log(&app, "ai-error", &format!("AI 调用失败: {}", e));
+            None => {
+                // Both the original call and the retry failed.
+                emit_log(
+                    &app,
+                    "ai-error",
+                    &format!("AI 调用失败: {}", last_err.unwrap_or_else(|| "未知错误".into())),
+                );
                 return;
             }
         }
@@ -364,6 +396,19 @@ fn get_tool_display_name(tool_name: &str) -> String {
         "get_file_history" => "正在获取文件变更记录...".to_string(),
         "get_diff" => "正在获取代码差异...".to_string(),
         _ => format!("正在执行 {}...", tool_name),
+    }
+}
+
+/// Truncate tool result for display in the frontend chat.
+/// Keeps the first 500 chars so users can see what the tool returned
+/// without flooding the UI.
+fn truncate_for_display(result: &str) -> String {
+    const MAX_DISPLAY: usize = 500;
+    if result.chars().count() > MAX_DISPLAY {
+        let truncated: String = result.chars().take(MAX_DISPLAY).collect();
+        format!("{}\n...(已截断)", truncated)
+    } else {
+        result.to_string()
     }
 }
 

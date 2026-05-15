@@ -142,9 +142,4 @@ defineProps<{
   white-space: nowrap;
   display: block;
 }
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
 </style>

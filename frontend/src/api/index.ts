@@ -44,6 +44,11 @@ export const gitApi = {
     const commits = await invoke<CommitInfo[]>('get_file_history', { file, timeRange })
     return { commits }
   },
+
+  async getCommitDiff(hash: string): Promise<{ diff: DiffInfo[] }> {
+    const diff = await invoke<DiffInfo[]>('get_commit_diff', { hash })
+    return { diff }
+  },
 }
 
 // ============================================================
@@ -55,14 +60,61 @@ interface ToolEvent {
   display: string
 }
 
-// Monotonic request counter to disambiguate concurrent streaming sessions.
+// Monotonic request counters to disambiguate concurrent streaming sessions.
 let chatRequestId = 0
+let analyzeRequestId = 0
 
 export const aiApi = {
+  /**
+   * Stream a diff analysis directly (no agent loop, no tool calling).
+   * Faster and cheaper for "analyze these changes" type queries.
+   */
+  async analyzeStream(
+    diff: DiffInfo[],
+    prompt: string,
+    onChunk: (text: string) => void,
+    onDone: () => void,
+    onError: (err: Error) => void,
+  ): Promise<void> {
+    const requestId = ++analyzeRequestId
+    const unlisteners: UnlistenFn[] = []
+    const cleanup = () => unlisteners.forEach((u) => u())
+    const isCurrentRequest = () => requestId === analyzeRequestId
+
+    try {
+      unlisteners.push(
+        await listen<string>('ai-analyze-chunk', (event) => {
+          if (!isCurrentRequest()) return
+          onChunk(event.payload)
+        }),
+      )
+      unlisteners.push(
+        await listen<void>('ai-analyze-done', () => {
+          if (!isCurrentRequest()) return
+          cleanup()
+          onDone()
+        }),
+      )
+      unlisteners.push(
+        await listen<string>('ai-error', (event) => {
+          if (!isCurrentRequest()) return
+          cleanup()
+          onError(new Error(event.payload))
+        }),
+      )
+
+      await invoke('ai_analyze_stream', { request: { diff, prompt } })
+    } catch (err) {
+      cleanup()
+      onError(err instanceof Error ? err : new Error(String(err)))
+    }
+  },
+
   async chat(
     messages: InputMessage[],
     context: ChatContext,
     onTool: (name: string, display: string) => void,
+    onToolResult: (name: string, result: string) => void,
     onChunk: (text: string) => void,
     onDone: () => void,
     onError: (err: Error) => void,
@@ -82,6 +134,13 @@ export const aiApi = {
         await listen<ToolEvent>('ai-tool', (event) => {
           if (!isCurrentRequest()) return
           onTool(event.payload.name, event.payload.display)
+        }),
+      )
+
+      unlisteners.push(
+        await listen<{ name: string; result: string }>('ai-tool-result', (event) => {
+          if (!isCurrentRequest()) return
+          onToolResult(event.payload.name, event.payload.result)
         }),
       )
 
