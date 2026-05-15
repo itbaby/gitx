@@ -20,6 +20,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'tab-change': [tab: 'diff' | 'history' | 'commits']
   'file-select': [file: string]
+  'commit-select': [hash: string]
   'fetch-commits': [branch?: string]
   'fetch-file-history': [file: string, timeRange: string]
 }>()
@@ -60,9 +61,11 @@ const emptyDescription = computed(() => {
 <template>
   <main class="main-content">
     <!-- 标签栏 -->
-    <div class="tab-bar">
+    <div class="tab-bar" role="tablist" aria-label="内容视图">
       <button
         class="tab-item"
+        role="tab"
+        :aria-selected="activeTab === 'diff'"
         :class="{ active: activeTab === 'diff' }"
         @click="emit('tab-change', 'diff')"
       >
@@ -74,6 +77,8 @@ const emptyDescription = computed(() => {
       </button>
       <button
         class="tab-item"
+        role="tab"
+        :aria-selected="activeTab === 'commits'"
         :class="{ active: activeTab === 'commits' }"
         @click="emit('tab-change', 'commits')"
       >
@@ -84,6 +89,8 @@ const emptyDescription = computed(() => {
       </button>
       <button
         class="tab-item"
+        role="tab"
+        :aria-selected="activeTab === 'history'"
         :class="{ active: activeTab === 'history' }"
         @click="emit('tab-change', 'history')"
       >
@@ -152,6 +159,7 @@ const emptyDescription = computed(() => {
         v-else-if="activeTab === 'commits'"
         :commits="commits"
         @refresh="emit('fetch-commits')"
+        @select-commit="emit('commit-select', $event)"
       />
 
       <!-- 文件历史 -->
@@ -315,10 +323,5 @@ const emptyDescription = computed(() => {
   height: 100%;
   gap: var(--space-md);
   color: var(--text-tertiary);
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

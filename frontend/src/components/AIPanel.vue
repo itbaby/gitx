@@ -14,6 +14,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   send: [text: string]
+  analyze: [prompt: string]
   clear: []
 }>()
 
@@ -61,22 +62,15 @@ const quickPrompts = [
 ]
 
 const handleQuickPrompt = (prompt: string) => {
-  emit('send', prompt)
+  emit('analyze', prompt)
 }
 
 // Markdown rendering with marked + DOMPurify
 const renderMarkdown = (text: string): string => {
   if (!text) return ''
-  const rawHtml = marked.parse(text, { async: false }) as string
-  return DOMPurify.sanitize(rawHtml)
+  return DOMPurify.sanitize(marked.parseSync(text, { gfm: true }))
 }
 
-// Escape HTML for user messages (prevent XSS)
-const escapeHtml = (text: string): string => {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
 </script>
 
 <template>
@@ -89,7 +83,7 @@ const escapeHtml = (text: string): string => {
         </svg>
         <span>AI 助手</span>
       </div>
-      <button v-if="messages.length > 0" class="btn btn-ghost btn-sm" @click="emit('clear')" title="清除对话">
+      <button v-if="messages.length > 0" class="btn btn-ghost btn-sm" @click="emit('clear')" title="清除对话" aria-label="清除对话">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
           <path d="M11 1.75v5h1.25a.25.25 0 0 1 .177.427l-3.25 3.25a.25.25 0 0 1-.354 0l-3.25-3.25A.25.25 0 0 1 6.75 6.75H8V1.75a.25.25 0 0 1 .25-.25h2.5a.25.25 0 0 1 .25.25Z"/>
           <path d="M1.5 12.75a.25.25 0 0 1 .25-.25h4.5a.25.25 0 0 1 .25.25v1.5a.25.25 0 0 1-.25.25h-4.5a.25.25 0 0 1-.25-.25Z"/>
@@ -120,7 +114,6 @@ const escapeHtml = (text: string): string => {
     <div ref="messagesContainer" class="messages-container">
       <!-- 欢迎消息 -->
       <div v-if="messages.length === 0" class="welcome-message">
-        <div class="welcome-icon">✨</div>
         <p>你可以：</p>
         <ul>
           <li>输入自然语言命令，如「比较当前分支和 main」</li>
@@ -141,7 +134,8 @@ const escapeHtml = (text: string): string => {
             <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.005 6.005 0 0 1 3.432-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
           </svg>
         </div>
-        <div class="message-content" v-html="msg.role === 'user' ? escapeHtml(msg.content) : renderMarkdown(msg.content)"></div>
+        <div v-if="msg.role === 'user'" class="message-content">{{ msg.content }}</div>
+        <div v-else class="message-content" v-html="renderMarkdown(msg.content)"></div>
         <div class="message-avatar ai-avatar" v-if="msg.role === 'assistant'">
           <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
             <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z"/>
@@ -163,6 +157,7 @@ const escapeHtml = (text: string): string => {
         ></textarea>
         <button
           class="btn btn-primary send-btn"
+          aria-label="发送消息"
           :disabled="loading || isStreaming || !inputText.trim()"
           @click="handleSend"
         >
@@ -288,11 +283,6 @@ const escapeHtml = (text: string): string => {
   padding: var(--space-2xl) var(--space-lg);
 }
 
-.welcome-icon {
-  font-size: 32px;
-  margin-bottom: var(--space-md);
-}
-
 .welcome-message p {
   margin-bottom: var(--space-sm);
   color: var(--text-secondary);
@@ -331,7 +321,7 @@ const escapeHtml = (text: string): string => {
 .message {
   display: flex;
   gap: var(--space-sm);
-  animation: fadeIn 0.2s ease;
+  animation: fadeInSlide 0.2s ease;
 }
 
 .message.user {
@@ -474,7 +464,7 @@ const escapeHtml = (text: string): string => {
   border-radius: var(--radius-md);
 }
 
-@keyframes fadeIn {
+@keyframes fadeInSlide {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }

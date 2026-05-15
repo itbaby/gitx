@@ -41,23 +41,40 @@ jobs:
           curl -L -o gitx-arm64.dmg \
             "https://github.com/itbaby/gitx/releases/download/${{ steps.release.outputs.tag }}/GitX_${{ steps.release.outputs.version }}_aarch64.dmg"
 
+      - name: Download Linux .deb
+        run: |
+          curl -L -o gitx-linux.deb \
+            "https://github.com/itbaby/gitx/releases/download/${{ steps.release.outputs.tag }}/gitx_${{ steps.release.outputs.version }}_amd64.deb"
+
       - name: Calculate SHA256 checksums
         id: shas
         run: |
           echo "intel=$(shasum -a 256 gitx-intel.dmg | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "arm64=$(shasum -a 256 gitx-arm64.dmg | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux=$(shasum -a 256 gitx-linux.deb | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Update Formula
+        working-directory: homebrew-tap
         run: |
           VERSION=${{ steps.release.outputs.version }}
-          sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/gitx.rb
-          sed -i '' "s|https://github.com/itbaby/gitx/releases/download/.*/GitX|https://github.com/itbaby/gitx/releases/download/${{ steps.release.outputs.tag }}/GitX|g" Formula/gitx.rb
-          sed -i '' "s|sha256 \".*\"|sha256 \"${{ steps.shas.outputs.intel }}\"|" Formula/gitx.rb
-          # Note: ARM64 SHA update needs to be done manually due to sed limitations
-        working-directory: homebrew-tap
+          TAG=${{ steps.release.outputs.tag }}
+          INTEL_SHA=${{ steps.shas.outputs.intel }}
+          ARM64_SHA=${{ steps.shas.outputs.arm64 }}
+          LINUX_SHA=${{ steps.shas.outputs.linux }}
+          ruby -e '
+            path = "Formula/gitx.rb"
+            content = File.read(path)
+            content.sub!(/version ".*"/, "version \"" + ENV["VERSION"] + "\"")
+            content.gsub!(%r{https://github.com/itbaby/gitx/releases/download/[^/]+/GitX}, "https://github.com/itbaby/gitx/releases/download/" + ENV["TAG"] + "/GitX")
+            content.gsub!(%r{https://github.com/itbaby/gitx/releases/download/[^/]+/gitx}, "https://github.com/itbaby/gitx/releases/download/" + ENV["TAG"] + "/gitx")
+            content.sub!(/X86_64_SHA256_PLACEHOLDER/, ENV["INTEL_SHA"])
+            content.sub!(/ARM64_SHA256_PLACEHOLDER/, ENV["ARM64_SHA"])
+            content.sub!(/LINUX_SHA256_PLACEHOLDER/, ENV["LINUX_SHA"])
+            File.write(path, content)
+          '
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v5.0.2
         with:
           path: homebrew-tap
           token: ${{ secrets.HOMEBREW_TOKEN }}

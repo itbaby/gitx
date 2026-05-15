@@ -8,6 +8,7 @@ defineProps<{
 
 defineEmits<{
   refresh: []
+  'select-commit': [hash: string]
 }>()
 </script>
 
@@ -18,7 +19,16 @@ defineEmits<{
     </div>
 
     <div v-else class="commit-timeline">
-      <div v-for="commit in commits" :key="commit.hash" class="commit-item">
+      <div
+        v-for="commit in commits"
+        :key="commit.hash"
+        class="commit-item"
+        role="button"
+        tabindex="0"
+        @click="$emit('select-commit', commit.hash)"
+        @keydown.enter="$emit('select-commit', commit.hash)"
+        @keydown.space.prevent="$emit('select-commit', commit.hash)"
+      >
         <div class="commit-indicator">
           <div class="commit-dot"></div>
           <div class="commit-line"></div>
@@ -70,6 +80,13 @@ defineEmits<{
   display: flex;
   gap: var(--space-md);
   position: relative;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-fast);
+}
+
+.commit-item:hover {
+  background-color: var(--bg-tertiary);
 }
 
 .commit-item:last-child .commit-line {
@@ -146,10 +163,5 @@ defineEmits<{
   gap: 4px;
   font-size: var(--text-xs);
   color: var(--text-tertiary);
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

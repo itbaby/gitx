@@ -30,45 +30,39 @@ class Gitx < Formula
     if OS.mac?
       # For DMG, we need to mount and copy the .app bundle
       require "open3"
-      
+
       # Create temporary mount point
       mount_point = Dir.mktmpdir("gitx-dmg")
-      
+
       # Mount the DMG
       _, status = Open3.capture2e("hdiutil", "attach", downloaded_cache_path.to_s, "-mountpoint", mount_point, "-nobrowse")
-      
-      if status.success?
-        # Find and copy the .app bundle
-        app_path = File.join(mount_point, "GitX.app")
-        if File.exist?(app_path)
-          FileUtils.cp_r(app_path, "/Applications/")
-        else
-          # Try finding in subdirectories
-          found_app = Dir.glob(File.join(mount_point, "**", "GitX.app")).first
-          FileUtils.cp_r(found_app, "/Applications/") if found_app
+
+      begin
+        if status.success?
+          # Find and copy the .app bundle
+          app_path = File.join(mount_point, "GitX.app")
+          if File.exist?(app_path)
+            prefix.install app_path
+          else
+            # Try finding in subdirectories
+            found_app = Dir.glob(File.join(mount_point, "**", "GitX.app")).first
+            prefix.install found_app if found_app
+          end
         end
-        
-        # Unmount the DMG
+      ensure
+        # Always detach the DMG to avoid leaving orphaned mounts
         system "hdiutil", "detach", mount_point
       end
-      
+
       Dir.rmdir(mount_point) if Dir.exist?(mount_point)
     else
       # Linux: install deb package
-      system "dpkg", "-i", "-force-all", downloaded_cache_path.to_s
+      system "dpkg", "-i", "--force-depends", downloaded_cache_path.to_s
     end
   end
 
-  def post_install
-    return unless OS.mac?
-
-    # Remove quarantine attribute to allow app to run
-    app_path = Pathname.new("/Applications/GitX.app")
-    system "xattr", "-dr", "com.apple.quarantine", app_path.to_s if app_path.exist?
-  end
-
   test do
-    # Test that the app bundle exists
-    assert_predicate "/Applications/GitX.app", :exist?
+    # Test that the app bundle exists in prefix
+    assert_predicate prefix/"GitX.app", :exist?
   end
 end

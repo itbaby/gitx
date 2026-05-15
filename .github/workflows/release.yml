@@ -23,9 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS 14 = Apple Silicon, macOS-latest = Intel
           - os: macos-14
             target: aarch64-apple-darwin
+            args: ''
+          - os: macos-13
+            target: x86_64-apple-darwin
             args: ''
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -41,7 +43,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -66,7 +68,7 @@ jobs:
         working-directory: frontend
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.5.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
