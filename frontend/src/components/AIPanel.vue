@@ -68,7 +68,7 @@ const handleQuickPrompt = (prompt: string) => {
 // Markdown rendering with marked + DOMPurify
 const renderMarkdown = (text: string): string => {
   if (!text) return ''
-  return DOMPurify.sanitize(marked.parseSync(text, { gfm: true }))
+  return DOMPurify.sanitize(marked.parse(text, { gfm: true }) as string)
 }
 
 </script>
