@@ -1,4 +1,4 @@
-name: CI - Lint & Build
+name: CI - Check, Test & Build
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   frontend-lint:
-    name: Frontend - Lint & Build
+    name: Frontend - Type Check, Test & Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,13 +26,17 @@ jobs:
         run: |
           cd frontend
           npx vue-tsc --noEmit
+      - name: Test
+        run: |
+          cd frontend
+          npm test
       - name: Build
         run: |
           cd frontend
           npm run build
 
   rust-lint:
-    name: Rust - Lint & Check
+    name: Rust - Lint, Check & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,3 +60,7 @@ jobs:
         run: |
           cd src-tauri
           cargo check
+      - name: Test
+        run: |
+          cd src-tauri
+          cargo test

@@ -1,19 +1,27 @@
 <script setup lang="ts">
-import { ref, onBeforeUnmount } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useGitStore } from './composables/useGitStore'
 import { useAiChat } from './composables/useAiChat'
+import { loadClampedNumber, saveNumber } from './utils/persist'
 import Sidebar from './components/Sidebar.vue'
 import MainContent from './components/MainContent.vue'
 import AIPanel from './components/AIPanel.vue'
 
 // ---- Panel resize ----
-
-const sidebarWidth = ref(260)
-const aiPanelWidth = ref(340)
+// Bounds declared first so the persisted initial widths can be clamped
+// against them on read (a stored value from an older build must never exceed
+// the current limits). Widths persist to localStorage so a user's layout
+// survives app restarts.
 const MIN_SIDEBAR = 180
 const MAX_SIDEBAR = 500
 const MIN_AI_PANEL = 260
 const MAX_AI_PANEL = 600
+
+const sidebarWidth = ref(loadClampedNumber('sidebarWidth', 260, MIN_SIDEBAR, MAX_SIDEBAR))
+const aiPanelWidth = ref(loadClampedNumber('aiPanelWidth', 340, MIN_AI_PANEL, MAX_AI_PANEL))
+
+watch(sidebarWidth, (w) => saveNumber('sidebarWidth', w))
+watch(aiPanelWidth, (w) => saveNumber('aiPanelWidth', w))
 
 interface DragState {
   handle: 'sidebar' | 'ai-panel'
@@ -100,6 +108,7 @@ const {
   handleChat,
   handleAnalyze,
   clearChat,
+  cancelStreaming,
 } = useAiChat(
   () => baseBranch.value,
   () => compareBranch.value,
@@ -195,6 +204,7 @@ const {
         @send="handleChat"
         @analyze="handleAnalyze"
         @clear="clearChat"
+        @cancel="cancelStreaming"
       />
     </div>
   </div>

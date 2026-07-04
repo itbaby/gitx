@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue'
+import { ref, nextTick, watch, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { ChatMessage } from '../types'
@@ -16,17 +16,25 @@ const emit = defineEmits<{
   send: [text: string]
   analyze: [prompt: string]
   clear: []
+  cancel: []
 }>()
 
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 
-// 自动滚动到底部
-const scrollToBottom = async () => {
-  await nextTick()
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-  }
+// Debounced auto-scroll: stream chunks fire watch callbacks much faster
+// than the browser can paint. Coalesce into one scroll per ~60ms tick.
+let scrollPending: ReturnType<typeof setTimeout> | null = null
+const scrollToBottom = () => {
+  if (scrollPending) return
+  scrollPending = setTimeout(() => {
+    scrollPending = null
+    void nextTick(() => {
+      if (messagesContainer.value) {
+        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      }
+    })
+  }, 60)
 }
 
 watch(() => props.messages.length, scrollToBottom)
@@ -34,6 +42,13 @@ watch(() => {
   const lastMsg = props.messages[props.messages.length - 1]
   return lastMsg?.content?.length
 }, scrollToBottom)
+
+onBeforeUnmount(() => {
+  if (scrollPending) {
+    clearTimeout(scrollPending)
+    scrollPending = null
+  }
+})
 
 const handleSend = () => {
   const text = inputText.value.trim()
@@ -46,6 +61,9 @@ const handleKeyDown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     handleSend()
+  } else if (e.key === 'Escape' && props.isStreaming) {
+    e.preventDefault()
+    emit('cancel')
   }
 }
 
@@ -65,10 +83,29 @@ const handleQuickPrompt = (prompt: string) => {
   emit('analyze', prompt)
 }
 
-// Markdown rendering with marked + DOMPurify
-const renderMarkdown = (text: string): string => {
+// Markdown render cache keyed by message id. `v-html="renderMarkdown(...)"`
+// re-runs on every reactive read, so without caching every stream chunk
+// re-parses every prior message — O(n²) in message count × chunk count.
+const RENDER_CACHE_LIMIT = 200
+const renderCache = new Map<string, { input: string; output: string }>()
+
+const renderMarkdown = (text: string, id: string): string => {
   if (!text) return ''
-  return DOMPurify.sanitize(marked.parse(text, { gfm: true }) as string)
+  const cached = renderCache.get(id)
+  if (cached && cached.input === text) return cached.output
+  const parsed = marked.parse(text, { gfm: true })
+  if (typeof parsed !== 'string') {
+    console.warn('marked.parse returned async result unexpectedly')
+    return ''
+  }
+  const html = DOMPurify.sanitize(parsed)
+  renderCache.set(id, { input: text, output: html })
+  if (renderCache.size > RENDER_CACHE_LIMIT) {
+    // Map preserves insertion order — evict oldest entry.
+    const firstKey = renderCache.keys().next().value
+    if (firstKey !== undefined) renderCache.delete(firstKey)
+  }
+  return html
 }
 
 </script>
@@ -135,7 +172,7 @@ const renderMarkdown = (text: string): string => {
           </svg>
         </div>
         <div v-if="msg.role === 'user'" class="message-content">{{ msg.content }}</div>
-        <div v-else class="message-content" v-html="renderMarkdown(msg.content)"></div>
+        <div v-else class="message-content" v-html="renderMarkdown(msg.content, msg.id)"></div>
         <div class="message-avatar ai-avatar" v-if="msg.role === 'assistant'">
           <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
             <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z"/>
@@ -149,16 +186,28 @@ const renderMarkdown = (text: string): string => {
       <div class="input-wrapper">
         <textarea
           v-model="inputText"
-          placeholder="输入消息... (Enter 发送)"
+          placeholder="输入消息... (Enter 发送, Esc 停止)"
           rows="1"
-          :disabled="loading || isStreaming"
+          :disabled="loading"
           @keydown="handleKeyDown"
           @input="autoResize($event)"
         ></textarea>
         <button
+          v-if="isStreaming"
+          class="btn btn-danger stop-btn"
+          aria-label="停止生成"
+          title="停止生成 (Esc)"
+          @click="emit('cancel')"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <rect x="3" y="3" width="10" height="10" rx="1.5"/>
+          </svg>
+        </button>
+        <button
+          v-else
           class="btn btn-primary send-btn"
           aria-label="发送消息"
-          :disabled="loading || isStreaming || !inputText.trim()"
+          :disabled="loading || !inputText.trim()"
           @click="handleSend"
         >
           <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
@@ -462,6 +511,24 @@ const renderMarkdown = (text: string): string => {
   min-width: 32px;
   padding: 0;
   border-radius: var(--radius-md);
+}
+
+.stop-btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border-radius: var(--radius-md);
+  background-color: var(--color-danger);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter var(--transition-fast);
+}
+
+.stop-btn:hover {
+  filter: brightness(1.1);
 }
 
 @keyframes fadeInSlide {

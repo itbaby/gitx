@@ -30,13 +30,43 @@ pub fn validate_hash(hash: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a file path doesn't contain traversal sequences.
+/// Validate a file path is relative, contains no traversal segments,
+/// and carries no control characters.
+///
+/// This guards the agent's filesystem reach — the AI supplies `path` and we
+/// feed it to libgit2. A naive substring ban on `..` both misses real
+/// traversal (`foo/..\\..\\bar`) and false-positives on legitimate filenames
+/// like `version-1..2.snapshot.txt`. We instead reject per-segment.
 pub fn validate_file_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("文件路径不能为空".to_string());
     }
-    if path.contains("..") {
-        return Err(format!("文件路径不能包含 ..: {}", path));
+    // Reject absolute paths: Unix (`/x`), UNC (`\\server\share`), and
+    // Windows drive letters (`C:\x` / `C:/x`). git paths are always relative
+    // to the repo root, so any of these is either a mistake or an escape.
+    let bytes = path.as_bytes();
+    let starts_drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\');
+    if path.starts_with('/')
+        || path.starts_with('\\')
+        || path.starts_with("//")
+        || starts_drive
+    {
+        return Err(format!("文件路径不能为绝对路径: {}", path));
+    }
+    // Reject embedded NUL / CR / LF — defensive against control-char smuggling.
+    if path.chars().any(|c| c == '\0' || c == '\n' || c == '\r') {
+        return Err(format!("文件路径包含非法控制字符: {}", path));
+    }
+    // Reject any path *segment* equal to "..". Splits on both separators so
+    // `foo/..\bar` is caught the same as `foo/../bar`. Does not trip on
+    // `foo..bar.go` since the whole segment is not `..`.
+    for segment in path.split(['/', '\\']) {
+        if segment == ".." {
+            return Err(format!("文件路径不能包含 .. 段: {}", path));
+        }
     }
     Ok(())
 }
@@ -244,7 +274,9 @@ fn exec_get_commits(git_state: &GitState, args: &Value) -> String {
             return format!("参数验证失败: {}", e);
         }
     }
-    let limit = (args["limit"].as_i64().unwrap_or(20) as i32).min(100);
+    // Clamp to [1, 100]: a negative/zero value from the model would otherwise
+    // drive `revwalk.take(usize::MAX)` and walk the entire repository history.
+    let limit = (args["limit"].as_i64().unwrap_or(20) as i32).clamp(1, 100);
 
     match git_state.get_commits(branch.as_deref(), limit) {
         Ok(commits) => {
@@ -407,6 +439,42 @@ mod tests {
     fn file_path_traversal_rejected() {
         assert!(validate_file_path("../etc/passwd").is_err());
         assert!(validate_file_path("foo/../../bar").is_err());
+        // Segment-based check — must catch traversal even with mixed separators.
+        assert!(validate_file_path("foo/..\\bar").is_err());
+        assert!(validate_file_path("a\\..\\..\\b").is_err());
+        assert!(validate_file_path("..").is_err());
+        assert!(validate_file_path("./../x").is_err());
+    }
+
+    #[test]
+    fn file_path_absolute_rejected() {
+        // Unix absolute
+        assert!(validate_file_path("/etc/passwd").is_err());
+        assert!(validate_file_path("/").is_err());
+        // Windows drive letters
+        assert!(validate_file_path("C:\\Windows\\system32").is_err());
+        assert!(validate_file_path("C:/Users/admin").is_err());
+        assert!(validate_file_path("d:/secret").is_err());
+        // UNC paths
+        assert!(validate_file_path("\\\\server\\share\\file").is_err());
+        assert!(validate_file_path("//server/share").is_err());
+    }
+
+    #[test]
+    fn file_path_control_chars_rejected() {
+        assert!(validate_file_path("foo\0bar").is_err());
+        assert!(validate_file_path("foo\nbar").is_err());
+        assert!(validate_file_path("foo\rbar").is_err());
+    }
+
+    #[test]
+    fn file_path_double_dot_filename_allowed() {
+        // A legitimate filename containing `..` as a substring, but whose
+        // segments are not literally `..`, must still pass — the old naive
+        // substring check would reject these (false positive).
+        assert!(validate_file_path("version-1..2.snapshot.txt").is_ok());
+        assert!(validate_file_path("src/foo..bar.go").is_ok());
+        assert!(validate_file_path("a..b/c").is_ok());
     }
 
     // --- format_diff ---

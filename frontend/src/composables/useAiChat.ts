@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { aiApi } from '../api/index'
 import type { ChatMessage, InputMessage, ChatContext, DiffInfo } from '../types/index'
 import { friendlyError } from '../utils/error'
+import { formatToolResult } from '../utils/markdown'
 
 const MAX_AI_MESSAGES = 100
 
@@ -59,8 +60,10 @@ export function useAiChat(
         (_name, display) => { toolStatus.value = display },
           (name, result) => {
             // Show tool result in chat so users see what data the agent retrieved.
+            // formatToolResult sizes the code fence to survive ``` characters
+            // that commonly appear inside diffs of Markdown/code files.
             toolStatus.value = ''
-            aiMsg.content += `\n\n> **${name}**\n> \`\`\`\n> ${result.replace(/\n/g, '\n> ')}\n> \`\`\`\n`
+            aiMsg.content += formatToolResult(name, result)
           },
         (chunk) => {
           toolStatus.value = ''
@@ -135,6 +138,25 @@ export function useAiChat(
     isStreaming.value = false
   }
 
+  /**
+   * Cancel the in-flight AI stream. Resets local streaming state immediately
+   * for responsive UI; the backend's terminal `done` event becomes a no-op
+   * since `isStreaming` is already false by the time it arrives.
+   *
+   * The currently-streaming assistant message is kept (partial content is
+   * useful) but marked as done so the blinking cursor stops.
+   */
+  const cancelStreaming = async () => {
+    if (!isStreaming.value) return
+    isStreaming.value = false
+    toolStatus.value = ''
+    const last = aiMessages.value[aiMessages.value.length - 1]
+    if (last && last.isStreaming) {
+      last.isStreaming = false
+    }
+    await aiApi.cancel()
+  }
+
   return {
     aiMessages,
     toolStatus,
@@ -142,5 +164,6 @@ export function useAiChat(
     handleChat,
     handleAnalyze,
     clearChat,
+    cancelStreaming,
   }
 }

@@ -1,6 +1,8 @@
 use crate::{ChatContext, InputMessage};
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::Emitter;
 
 // ============================================================
@@ -33,6 +35,15 @@ pub struct AiConfig {
     pub model: String,
     pub api_key: Secret,
     pub base_url: String,
+    /// Sampling temperature. Hoisted out of the four call sites so it's tunable
+    /// per deployment via `AI_TEMPERATURE`.
+    pub temperature: f64,
+    /// Max output tokens for each completion.
+    pub max_tokens: u32,
+    /// JSON field name used to carry `max_tokens`. OpenAI's newer API wants
+    /// `max_completion_tokens`, but most OpenAI-compatible gateways only
+    /// accept the legacy `max_tokens`. Configurable via `AI_MAX_TOKENS_FIELD`.
+    pub max_tokens_field: String,
     client: reqwest::Client,
 }
 
@@ -42,17 +53,41 @@ impl AiConfig {
         let model = std::env::var("AI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let temperature = std::env::var("AI_TEMPERATURE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.3);
+        let max_tokens = std::env::var("AI_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4000);
+        let max_tokens_field = std::env::var("AI_MAX_TOKENS_FIELD")
+            .unwrap_or_else(|_| "max_completion_tokens".to_string());
 
         Some(AiConfig {
             model,
             api_key: Secret::new(api_key),
             base_url,
+            temperature,
+            max_tokens,
+            max_tokens_field,
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         })
+    }
+
+    /// Build the shared base of every chat request body (model, temperature,
+    /// max-tokens field). Call sites merge in their own `messages`/`tools`/
+    /// `stream` keys, so the shared params are defined in exactly one place.
+    fn base_body(&self) -> serde_json::Map<String, Value> {
+        let mut map = serde_json::Map::new();
+        map.insert("model".to_string(), Value::String(self.model.clone()));
+        map.insert("temperature".to_string(), json!(self.temperature));
+        map.insert(self.max_tokens_field.clone(), json!(self.max_tokens));
+        map
     }
 
     fn chat_url(&self) -> String {
@@ -87,15 +122,15 @@ impl AiConfig {
     pub async fn analyze_diff(&self, diff: &str, prompt: &str) -> Result<String, String> {
         let user_prompt = format!("## Git Diff:\n```\n{}\n```\n\n## 问题:\n{}", diff, prompt);
 
-        let body = json!({
-            "model": self.model,
-            "messages": [
+        let mut body = self.base_body();
+        body.insert(
+            "messages".to_string(),
+            json!([
                 { "role": "system", "content": ANALYSIS_SYSTEM_PROMPT },
                 { "role": "user", "content": user_prompt }
-            ],
-            "max_completion_tokens": 4000,
-            "temperature": 0.3
-        });
+            ]),
+        );
+        let body = Value::Object(body);
 
         let response = self
             .client()
@@ -127,21 +162,27 @@ impl AiConfig {
     // Streaming analysis
     // ========================================================
 
-    pub async fn analyze_diff_stream(&self, app: &tauri::AppHandle, diff: &str, prompt: &str) {
+    pub async fn analyze_diff_stream(
+        &self,
+        app: &tauri::AppHandle,
+        diff: &str,
+        prompt: &str,
+        cancel: &Arc<AtomicBool>,
+    ) {
         let user_prompt = format!("## Git Diff:\n```\n{}\n```\n\n## 问题:\n{}", diff, prompt);
 
-        let body = json!({
-            "model": self.model,
-            "messages": [
+        let mut body = self.base_body();
+        body.insert(
+            "messages".to_string(),
+            json!([
                 { "role": "system", "content": ANALYSIS_SYSTEM_PROMPT },
                 { "role": "user", "content": user_prompt }
-            ],
-            "max_completion_tokens": 4000,
-            "temperature": 0.3,
-            "stream": true
-        });
+            ]),
+        );
+        body.insert("stream".to_string(), json!(true));
+        let body = Value::Object(body);
 
-        if let Err(e) = self.stream_sse(app, body, "analyze").await {
+        if let Err(e) = self.stream_sse(app, body, "analyze", cancel).await {
             emit_log(app, "ai-error", &e);
         }
     }
@@ -155,6 +196,7 @@ impl AiConfig {
         app: &tauri::AppHandle,
         body: Value,
         event_prefix: &str,
+        cancel: &Arc<AtomicBool>,
     ) -> Result<(), String> {
         let response = self
             .client()
@@ -175,6 +217,14 @@ impl AiConfig {
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
+            // Cooperative cancel: user hit Stop in the frontend. Emit the
+            // terminal event so the UI closes out the streaming message
+            // instead of hanging on a half-finished reply.
+            if cancel.load(Ordering::Relaxed) {
+                let ev_name = format!("ai-{}-done", event_prefix);
+                emit_log(app, &ev_name, &());
+                return Ok(());
+            }
             let chunk = chunk.map_err(|e| format!("流式读取错误: {}", e))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -221,6 +271,7 @@ pub async fn run_agent_chat(
     chat_ctx: Option<ChatContext>,
     tool_defs: Vec<Value>,
     repo_path: Option<String>,
+    cancel: Arc<AtomicBool>,
 ) {
     let system_prompt = build_system_prompt(&chat_ctx);
     let max_rounds = 5;
@@ -238,101 +289,29 @@ pub async fn run_agent_chat(
     }
 
     for _round in 0..max_rounds {
-        let body = json!({
-            "model": config.model,
-            "messages": &messages,
-            "tools": &tool_defs,
-            "tool_choice": "auto"
-        });
+        // Honor a cancel that landed between rounds — emit the terminal
+        // event so the frontend closes out the streaming message.
+        if cancel.load(Ordering::Relaxed) {
+            emit_log(&app, "ai-chat-done", &());
+            return;
+        }
 
-        // Retry transient failures up to 2 times.
-        let mut last_err: Option<String> = None;
-        let result = loop {
-            match send_non_streaming(&config, &body).await {
-                Ok(r) => break Some(r),
-                Err(e) => {
-                    if last_err.is_some() {
-                        // Already retried once; give up.
-                        last_err = Some(e);
-                        break None;
-                    }
-                    last_err = Some(e);
-                    // Brief backoff before retry.
-                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                    continue;
-                }
-            }
-        };
-
-        match result {
-            Some(result) => {
-                let choice = &result["choices"][0];
-                let msg = &choice["message"];
-
-                if let Some(tool_calls) = msg["tool_calls"].as_array() {
-                    if !tool_calls.is_empty() {
-                        messages.push(msg.clone());
-
-                        for tc in tool_calls {
-                            let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
-                            let tool_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                            let tool_call_id = tc["id"].as_str().unwrap_or("").to_string();
-
-                            emit_log(
-                                &app,
-                                "ai-tool",
-                                &json!({
-                                    "name": tool_name,
-                                    "display": get_tool_display_name(tool_name)
-                                }),
-                            );
-
-                            let tn = tool_name.to_string();
-                            let ta = tool_args.to_string();
-                            let rp = repo_path.clone();
-                            let tool_result = tokio::task::spawn_blocking(move || {
-                                super::tools::call_tool(&tn, &ta, &rp)
-                            })
-                            .await
-                            .unwrap_or_else(|e| format!("工具执行失败: {}", e));
-
-                            emit_log(
-                                &app,
-                                "ai-tool-result",
-                                &json!({
-                                    "name": tool_name,
-                                    "result": truncate_for_display(&tool_result),
-                                }),
-                            );
-
-                            messages.push(json!({
-                                "role": "tool",
-                                "content": tool_result,
-                                "tool_call_id": tool_call_id
-                            }));
-                        }
-                        continue;
-                    }
-                }
-
-                messages.push(msg.clone());
-                let stream_body = json!({
-                    "model": config.model,
-                    "messages": &messages,
-                    "stream": true
-                });
-                if let Err(e) = config.stream_sse(&app, stream_body, "chat").await {
-                    emit_log(&app, "ai-error", &e);
-                }
+        match agent_round(&config, &messages, &tool_defs, &cancel).await {
+            AgentStep::Cancelled => {
+                emit_log(&app, "ai-chat-done", &());
                 return;
             }
-            None => {
-                // Both the original call and the retry failed.
-                emit_log(
-                    &app,
-                    "ai-error",
-                    &format!("AI 调用失败: {}", last_err.unwrap_or_else(|| "未知错误".into())),
-                );
+            AgentStep::Failed(err) => {
+                emit_log(&app, "ai-error", &format!("AI 调用失败: {}", err));
+                return;
+            }
+            AgentStep::Reply(result) => {
+                let msg = &result["choices"][0]["message"];
+                if handle_tool_calls(&app, msg, &mut messages, &repo_path).await {
+                    continue;
+                }
+                messages.push(msg.clone());
+                stream_final_reply(&config, &app, &messages, &cancel).await;
                 return;
             }
         }
@@ -344,6 +323,133 @@ pub async fn run_agent_chat(
         "抱歉，操作步骤过多，请尝试更具体的描述。",
     );
     emit_log(&app, "ai-chat-done", &());
+}
+
+// ============================================================
+// Agent-loop helpers (extracted from `run_agent_chat`)
+// ============================================================
+
+/// Outcome of one agent round — a tool-decision call to the model.
+enum AgentStep {
+    /// Model returned a response (may contain tool calls or final text).
+    Reply(Value),
+    /// Both the initial call and the retry failed, or a non-transient error.
+    Failed(String),
+    /// User hit Stop while the request was in flight.
+    Cancelled,
+}
+
+/// Send the tool-decision request, retrying once on transient errors and
+/// aborting if the user cancels. Encapsulates the retry + cancel race that
+/// used to be inlined in `run_agent_chat`.
+async fn agent_round(
+    config: &AiConfig,
+    messages: &[Value],
+    tool_defs: &[Value],
+    cancel: &Arc<AtomicBool>,
+) -> AgentStep {
+    let mut body = config.base_body();
+    body.insert("messages".to_string(), json!(messages));
+    body.insert("tools".to_string(), json!(tool_defs));
+    body.insert("tool_choice".to_string(), json!("auto"));
+    let body = Value::Object(body);
+
+    let mut last_err: Option<String> = None;
+    loop {
+        // Race the network call against the cancel flag. If the user hits
+        // Stop mid-request, the `send_non_streaming` future is dropped
+        // (aborting the underlying connection).
+        let res = tokio::select! {
+            r = send_non_streaming(config, &body) => r,
+            _ = cancel_signal(cancel) => return AgentStep::Cancelled,
+        };
+        match res {
+            Ok(r) => return AgentStep::Reply(r),
+            Err(e) => {
+                if last_err.is_some() || !is_transient_error(&e) {
+                    return AgentStep::Failed(e);
+                }
+                last_err = Some(e);
+                // Brief backoff before retry — also cancellable.
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(800)) => {},
+                    _ = cancel_signal(cancel) => return AgentStep::Cancelled,
+                }
+            }
+        }
+    }
+}
+
+/// Execute every tool call in `msg`, emit progress/result events, and append
+/// the tool responses to `messages`. Returns `true` if any tool call ran
+/// (meaning the agent loop should continue to the next round).
+async fn handle_tool_calls(
+    app: &tauri::AppHandle,
+    msg: &Value,
+    messages: &mut Vec<Value>,
+    repo_path: &Option<String>,
+) -> bool {
+    let Some(tool_calls) = msg["tool_calls"].as_array() else {
+        return false;
+    };
+    if tool_calls.is_empty() {
+        return false;
+    }
+
+    messages.push(msg.clone());
+    for tc in tool_calls {
+        let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
+        let tool_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
+        let tool_call_id = tc["id"].as_str().unwrap_or("").to_string();
+
+        emit_log(
+            app,
+            "ai-tool",
+            &json!({
+                "name": tool_name,
+                "display": get_tool_display_name(tool_name)
+            }),
+        );
+
+        let tn = tool_name.to_string();
+        let ta = tool_args.to_string();
+        let rp = repo_path.clone();
+        let tool_result = tokio::task::spawn_blocking(move || super::tools::call_tool(&tn, &ta, &rp))
+            .await
+            .unwrap_or_else(|e| format!("工具执行失败: {}", e));
+
+        emit_log(
+            app,
+            "ai-tool-result",
+            &json!({
+                "name": tool_name,
+                "result": truncate_for_display(&tool_result),
+            }),
+        );
+
+        messages.push(json!({
+            "role": "tool",
+            "content": tool_result,
+            "tool_call_id": tool_call_id
+        }));
+    }
+    true
+}
+
+/// Stream the final assistant reply (no tools) back to the frontend.
+async fn stream_final_reply(
+    config: &AiConfig,
+    app: &tauri::AppHandle,
+    messages: &[Value],
+    cancel: &Arc<AtomicBool>,
+) {
+    let mut stream_body = config.base_body();
+    stream_body.insert("messages".to_string(), json!(messages));
+    stream_body.insert("stream".to_string(), json!(true));
+    let stream_body = Value::Object(stream_body);
+    if let Err(e) = config.stream_sse(app, stream_body, "chat", cancel).await {
+        emit_log(app, "ai-error", &e);
+    }
 }
 
 // ============================================================
@@ -365,12 +471,35 @@ fn build_system_prompt(chat_ctx: &Option<ChatContext>) -> String {
     p
 }
 
+/// Classify whether an error from `send_non_streaming` is worth retrying.
+///
+/// Retrying is only worthwhile for transient failures: connectivity errors
+/// and HTTP 5xx server errors. Client errors (4xx, e.g. auth/bad request)
+/// and response parse failures are not retried, since they will not succeed
+/// on a second attempt.
+fn is_transient_error(err: &str) -> bool {
+    // Network / connectivity failures (produced by `.send()` and stream reads).
+    if err.contains("请求失败") {
+        return true;
+    }
+    // HTTP error responses: `AI API 错误 (503): ...` -> retry only on 5xx.
+    if let Some(rest) = err.strip_prefix("AI API 错误 (") {
+        if let Some(digit) = rest.chars().next() {
+            return digit == '5';
+        }
+    }
+    false
+}
+
 async fn send_non_streaming(config: &AiConfig, body: &Value) -> Result<Value, String> {
     let response = config
         .client()
         .post(config.chat_url())
         .headers(config.headers()?)
         .json(body)
+        // Per-request cap so a single hung provider call can't stall the
+        // whole multi-round agent loop. Lower than the client-wide timeout.
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
         .map_err(|e| format!("AI API 请求失败: {}", e))?;
@@ -385,6 +514,20 @@ async fn send_non_streaming(config: &AiConfig, body: &Value) -> Result<Value, St
         .json()
         .await
         .map_err(|e| format!("AI 响应解析失败: {}", e))
+}
+
+/// A future that resolves once `cancel` is set. Used to race against a
+/// network request via `tokio::select!` so the user's Stop button can
+/// abort an in-flight (non-streaming) tool-decision call instead of
+/// waiting for it to finish. Polls at the same 100ms granularity as the
+/// SSE loop's cancel check.
+async fn cancel_signal(cancel: &Arc<AtomicBool>) {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 fn get_tool_display_name(tool_name: &str) -> String {
@@ -416,5 +559,74 @@ fn truncate_for_display(result: &str) -> String {
 fn emit_log(app: &tauri::AppHandle, event: &str, payload: &(impl serde::Serialize + ?Sized)) {
     if let Err(e) = app.emit(event, payload) {
         eprintln!("[emit error] {}: {}", event, e);
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::{is_transient_error, AiConfig, Secret};
+
+    fn test_config(field: &str) -> AiConfig {
+        AiConfig {
+            model: "test".to_string(),
+            api_key: Secret::new("k".to_string()),
+            base_url: "http://x".to_string(),
+            temperature: 0.3,
+            max_tokens: 4000,
+            max_tokens_field: field.to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    #[test]
+    fn base_body_uses_configured_token_field() {
+        // Default OpenAI field name.
+        let cfg = test_config("max_completion_tokens");
+        let body = cfg.base_body();
+        assert!(body.contains_key("max_completion_tokens"));
+        assert!(!body.contains_key("max_tokens"));
+        assert_eq!(body.get("temperature").and_then(|v| v.as_f64()), Some(0.3));
+        assert_eq!(body.get("max_completion_tokens").and_then(|v| v.as_u64()), Some(4000));
+
+        // Legacy field name for OpenAI-compatible gateways (e.g. BigModel).
+        let cfg2 = test_config("max_tokens");
+        let body2 = cfg2.base_body();
+        assert!(body2.contains_key("max_tokens"));
+        assert!(!body2.contains_key("max_completion_tokens"));
+    }
+
+    #[test]
+    fn network_failures_are_transient() {
+        assert!(is_transient_error("AI API 请求失败: connection reset"));
+        assert!(is_transient_error("AI 流式请求失败: dns lookup failed"));
+    }
+
+    #[test]
+    fn http_5xx_is_transient() {
+        assert!(is_transient_error("AI API 错误 (500): Internal Server Error"));
+        assert!(is_transient_error("AI API 错误 (503): Service Unavailable"));
+        assert!(is_transient_error("AI API 错误 (529): Overloaded"));
+    }
+
+    #[test]
+    fn http_4xx_is_not_transient() {
+        assert!(!is_transient_error("AI API 错误 (401): Unauthorized"));
+        assert!(!is_transient_error("AI API 错误 (400): Bad Request"));
+        assert!(!is_transient_error("AI API 错误 (404): Not Found"));
+        assert!(!is_transient_error("AI API 错误 (422): Unprocessable"));
+    }
+
+    #[test]
+    fn parse_failures_are_not_transient() {
+        assert!(!is_transient_error("AI 响应解析失败: invalid json"));
+    }
+
+    #[test]
+    fn unrecognized_errors_are_not_transient() {
+        assert!(!is_transient_error("something else entirely"));
     }
 }

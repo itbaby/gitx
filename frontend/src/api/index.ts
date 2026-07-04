@@ -174,4 +174,19 @@ export const aiApi = {
       onError(err instanceof Error ? err : new Error(String(err)))
     }
   },
+
+  /**
+   * Cancel the in-flight AI stream (chat or analyze). Resolves when the
+   * cancel signal is set; the backend then emits the terminal `done` event
+   * so the existing onDone listeners fire. Safe to call when not streaming.
+   */
+  async cancel(): Promise<void> {
+    try {
+      await invoke('ai_cancel')
+    } catch (err) {
+      // Don't propagate — cancel is best-effort. If the backend rejected it
+      // (e.g. no stream was live), the user-visible state is already correct.
+      console.warn('ai_cancel failed:', err)
+    }
+  },
 }

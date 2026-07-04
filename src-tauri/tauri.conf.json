@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "GitX",
-  "version": "0.2.0",
   "identifier": "com.gitx.app",
   "build": {
     "beforeDevCommand": "cd ../frontend && npm run dev",

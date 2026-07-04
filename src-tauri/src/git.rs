@@ -47,7 +47,12 @@ impl GitState {
         let mut names: Vec<String> = repo
             .branches(Some(git2::BranchType::Local))
             .map_err(|e| format!("获取分支失败: {}", e))?
-            .flatten()
+            .filter_map(|branch_result| {
+                if let Err(ref e) = branch_result {
+                    eprintln!("警告: 读取分支时跳过（错误: {}）", e);
+                }
+                branch_result.ok()
+            })
             .filter_map(|(branch, _)| branch.name().ok()?.map(|n| n.to_string()))
             .collect();
         names.sort();
@@ -162,26 +167,34 @@ impl GitState {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let old_path = delta.old_file().path().map(|p| p.to_string_lossy().to_string());
-            let new_path = delta.new_file().path().map(|p| p.to_string_lossy().to_string());
-
             let patch = match git2::Patch::from_diff(diff, delta_idx) {
                 Ok(Some(mut p)) => {
                     let mut buf = String::new();
-                    buf.push_str(&format!("--- a/{}\n+++ b/{}\n",
-                        old_path.as_deref().unwrap_or(&file_path),
-                        new_path.as_deref().unwrap_or(&file_path)));
-
                     p.print(&mut |_delta, _hunk, line| {
                         let origin = line.origin();
-                        let content = std::str::from_utf8(line.content()).unwrap_or("").trim_end();
+                        let content = std::str::from_utf8(line.content()).unwrap_or("");
                         match origin {
+                            // Content lines: emit the origin prefix followed
+                            // by the (newline-normalized) line text.
                             '+' | '-' | ' ' => {
                                 buf.push(origin);
-                                buf.push_str(content);
+                                buf.push_str(content.trim_end());
                                 buf.push('\n');
                             }
-                            _ => buf.push_str(content),
+                            // File/hunk headers and binary markers —
+                            // libgit2 is inconsistent about trailing
+                            // newlines on these, so normalize to exactly
+                            // one. Without this, header lines jam together
+                            // (e.g. `+++ b/x@@ -0,0 +1 @@+added`) which
+                            // breaks both the patch rendering and the
+                            // +/- line counts for added/removed files.
+                            _ => {
+                                let trimmed = content.trim_end();
+                                if !trimmed.is_empty() {
+                                    buf.push_str(trimmed);
+                                    buf.push('\n');
+                                }
+                            }
                         }
                         true
                     }).map_err(|e| format!("打印 patch 失败: {}", e))?;
@@ -220,4 +233,148 @@ fn count_adds(patch: &str) -> i32 {
 
 fn count_dels(patch: &str) -> i32 {
     patch.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count() as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // --- pure helper unit tests ---
+
+    #[test]
+    fn count_adds_ignores_diff_headers() {
+        let patch = "+++ b/x.rs\n+ fn a()\n+ 1\n- old\n context";
+        assert_eq!(count_adds(patch), 2);
+    }
+
+    #[test]
+    fn count_dels_ignores_diff_headers() {
+        let patch = "--- a/x.rs\n- old\n- older\n+ new";
+        assert_eq!(count_dels(patch), 2);
+    }
+
+    #[test]
+    fn count_empty_patch() {
+        assert_eq!(count_adds(""), 0);
+        assert_eq!(count_dels(""), 0);
+    }
+
+    // --- temp-repo integration tests ---
+
+    struct RepoFixture {
+        _dir: tempfile::TempDir,
+        state: GitState,
+        head_branch: String,
+        c0: String,
+        c1: String,
+    }
+
+    /// Build a repo with two commits on the default branch, plus a `feature`
+    /// branch pointing at the first commit. Returns the bound `GitState`.
+    fn build_fixture() -> RepoFixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(dir.path()).expect("init");
+        {
+            let mut cfg = repo.config().expect("config");
+            cfg.set_str("user.name", "tester").unwrap();
+            cfg.set_str("user.email", "tester@example.com").unwrap();
+        }
+
+        // Commit a file -> c0, then modify/add -> c1, both on the default branch.
+        let commit_file = |name: &str, content: &str, parent: Option<&git2::Commit>| -> git2::Commit {
+            fs::write(dir.path().join(name), content).unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(std::path::Path::new(name)).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = repo.signature().unwrap();
+            let parents: Vec<&git2::Commit> = parent.into_iter().collect();
+            let oid = repo
+                .commit(Some("HEAD"), &sig, &sig, &format!("add {}", name), &tree, &parents)
+                .unwrap();
+            repo.find_commit(oid).unwrap()
+        };
+
+        let c0 = commit_file("a.txt", "hello\n", None);
+        let c1 = commit_file("b.txt", "world\n", Some(&c0));
+
+        // feature branch off c0 (doesn't touch working tree / HEAD).
+        repo.branch("feature", &c0, false).unwrap();
+
+        let head_branch = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        let state = GitState::from_path(dir.path().to_str().unwrap()).expect("GitState");
+        RepoFixture {
+            _dir: dir,
+            state,
+            head_branch,
+            c0: c0.id().to_string(),
+            c1: c1.id().to_string(),
+        }
+    }
+
+    #[test]
+    fn get_branches_lists_feature_and_head() {
+        let f = build_fixture();
+        let branches = f.state.get_branches().unwrap();
+        assert!(branches.contains(&"feature".to_string()));
+        assert!(branches.contains(&f.head_branch));
+        assert!(branches.len() >= 2);
+    }
+
+    #[test]
+    fn get_current_branch_matches_head() {
+        let f = build_fixture();
+        assert_eq!(f.state.get_current_branch().unwrap(), f.head_branch);
+    }
+
+    #[test]
+    fn get_commits_returns_history_descending() {
+        let f = build_fixture();
+        let commits = f.state.get_commits(Some(&f.head_branch), 10).unwrap();
+        assert!(commits.len() >= 2);
+        // Most recent first.
+        assert_eq!(commits[0].hash, f.c1);
+        assert_eq!(commits[1].hash, f.c0);
+    }
+
+    #[test]
+    fn get_commit_diff_detects_added_file() {
+        let f = build_fixture();
+        let diff = f.state.get_commit_diff(&f.c1).unwrap();
+        let files: Vec<&str> = diff.iter().map(|d| d.file.as_str()).collect();
+        assert!(files.contains(&"b.txt"));
+        // b.txt is pure addition.
+        let b = diff.iter().find(|d| d.file == "b.txt").unwrap();
+        assert!(b.added >= 1);
+        assert_eq!(b.deleted, 0);
+    }
+
+    #[test]
+    fn get_diff_between_commits() {
+        let f = build_fixture();
+        let diff = f.state.get_diff(&f.c0, &f.c1).unwrap();
+        let files: Vec<&str> = diff.iter().map(|d| d.file.as_str()).collect();
+        assert!(files.contains(&"b.txt"));
+    }
+
+    #[test]
+    fn get_branch_diff_feature_vs_head() {
+        let f = build_fixture();
+        let diff = f.state.get_branch_diff("feature", &f.head_branch).unwrap();
+        // b.txt was added on head after the feature branch forked at c0.
+        let files: Vec<String> = diff.iter().map(|d| d.file.clone()).collect();
+        assert!(files.iter().any(|name| name == "b.txt"));
+    }
+
+    #[test]
+    fn get_file_history_finds_touching_commits() {
+        let f = build_fixture();
+        // since=0 (epoch) so the time filter doesn't prune anything.
+        let history = f.state.get_file_history("a.txt", 0).unwrap();
+        assert!(!history.is_empty());
+        let hashes: Vec<&str> = history.iter().map(|c| c.hash.as_str()).collect();
+        assert!(hashes.contains(&f.c0.as_str()));
+    }
 }
